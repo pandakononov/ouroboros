@@ -417,9 +417,23 @@ def log_chat(direction: str, chat_id: int, user_id: int, text: str) -> None:
     })
 
 
+_recent_sends: dict = {}  # hash -> timestamp
+_SEND_DEDUP_SEC = 30
+
 def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
                      force_budget: bool = False, fmt: str = "",
                      is_progress: bool = False) -> None:
+    import hashlib, time as _time
+    _text_hash = hashlib.md5(f"{chat_id}:{(text or '')[:500]}".encode()).hexdigest()
+    _now = _time.time()
+    if _text_hash in _recent_sends and (_now - _recent_sends[_text_hash]) < _SEND_DEDUP_SEC:
+        logging.getLogger(__name__).info("Dedup: skipping duplicate send (%.1fs ago)", _now - _recent_sends[_text_hash])
+        return
+    _recent_sends[_text_hash] = _now
+    # Clean old entries
+    for k in list(_recent_sends):
+        if _now - _recent_sends[k] > _SEND_DEDUP_SEC * 2:
+            del _recent_sends[k]
     st = load_state()
     owner_id = int(st.get("owner_id") or 0)
     # Progress messages go to progress.jsonl instead of chat.jsonl
