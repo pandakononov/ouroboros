@@ -142,16 +142,23 @@ def _ensure_browser(ctx: ToolContext):
     # Store reference in ctx for cleanup
     ctx.browser_state.pw_instance = _pw_instance
 
-    ctx.browser_state.browser = _pw_instance.chromium.launch(
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=site-per-process",
-            "--window-size=1920,1080",
-        ],
-    )
+    import os as _os
+    _cdp_url = _os.environ.get("BROWSER_CDP_URL", "")
+    if _cdp_url:
+        # Connect to external CDP browser (e.g. Lightpanda)
+        ctx.browser_state.browser = _pw_instance.chromium.connect_over_cdp(_cdp_url)
+        log.info(f"Connected to CDP browser at {_cdp_url}")
+    else:
+        ctx.browser_state.browser = _pw_instance.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=site-per-process",
+                "--window-size=1920,1080",
+            ],
+        )
     ctx.browser_state.page = ctx.browser_state.browser.new_page(
         viewport={"width": 1920, "height": 1080},
         user_agent=(
