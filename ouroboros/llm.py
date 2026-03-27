@@ -166,12 +166,14 @@ class LLMClient:
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
 
-        extra_body: Dict[str, Any] = {
-            "reasoning": {"effort": effort, "exclude": True},
-        }
+        _is_local = "localhost" in self._base_url or "192.168." in self._base_url or "11434" in self._base_url
+
+        extra_body: Dict[str, Any] = {}
+        if not _is_local:
+            extra_body["reasoning"] = {"effort": effort, "exclude": True}
 
         # Pin Anthropic models to Anthropic provider for prompt caching
-        if model.startswith("anthropic/"):
+        if not _is_local and model.startswith("anthropic/"):
             extra_body["provider"] = {
                 "order": ["Anthropic"],
                 "allow_fallbacks": False,
@@ -200,6 +202,10 @@ class LLMClient:
         usage = resp_dict.get("usage") or {}
         choices = resp_dict.get("choices") or [{}]
         msg = (choices[0] if choices else {}).get("message") or {}
+
+        # Ollama thinking models may return content in "reasoning" field
+        if not msg.get("content") and msg.get("reasoning"):
+            msg["content"] = msg["reasoning"]
 
         # Extract cached_tokens from prompt_tokens_details if available
         if not usage.get("cached_tokens"):
