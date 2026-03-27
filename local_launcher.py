@@ -497,12 +497,25 @@ while True:
         elif msg.get("document"):
             doc = msg["document"]
             mime_type = str(doc.get("mime_type") or "")
+            file_name = str(doc.get("file_name") or "")
             if mime_type.startswith("image/"):
                 file_id = doc.get("file_id")
                 if file_id:
                     b64, mime = TG.download_file_base64(file_id)
                     if b64:
                         image_data = (b64, mime, caption)
+            elif mime_type.startswith("text/") or file_name.endswith((".md", ".txt", ".py", ".json", ".yaml", ".yml", ".csv", ".log", ".sh", ".toml")):
+                file_id = doc.get("file_id")
+                if file_id:
+                    b64_content, _ = TG.download_file_base64(file_id)
+                    if b64_content:
+                        import base64 as _b64
+                        try:
+                            file_text = _b64.b64decode(b64_content).decode("utf-8", errors="replace")
+                            file_header = f"[File: {file_name}]\n"
+                            text = (caption + "\n\n" if caption else "") + file_header + file_text
+                        except Exception:
+                            pass
 
         st = load_state()
         if st.get("owner_id") is None:
