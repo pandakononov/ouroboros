@@ -679,16 +679,17 @@ def run_llm_loop(
 
             # Compact old tool history when needed
             # Check for LLM-requested compaction first (via compact_context tool)
+            _keep_recent = int(os.environ.get("OUROBOROS_KEEP_RECENT", "20"))
             pending_compaction = getattr(tools._ctx, '_pending_compaction', None)
             if pending_compaction is not None:
                 messages = compact_tool_history_llm(messages, keep_recent=pending_compaction)
                 tools._ctx._pending_compaction = None
             elif round_idx > 8:
-                messages = compact_tool_history(messages, keep_recent=6)
+                messages = compact_tool_history_llm(messages, keep_recent=_keep_recent)
             elif round_idx > 3:
                 # Light compaction: only if messages list is very long (>60 items)
                 if len(messages) > 60:
-                    messages = compact_tool_history(messages, keep_recent=6)
+                    messages = compact_tool_history(messages, keep_recent=_keep_recent)
 
             # --- LLM call with retry ---
             msg, cost = _call_llm_with_retry(
