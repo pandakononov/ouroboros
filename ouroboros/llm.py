@@ -169,7 +169,9 @@ class LLMClient:
         _is_local = "localhost" in self._base_url or "192.168." in self._base_url or "11434" in self._base_url
 
         extra_body: Dict[str, Any] = {}
-        if not _is_local:
+        if _is_local:
+            extra_body["think"] = False
+        else:
             extra_body["reasoning"] = {"effort": effort, "exclude": True}
 
         # Pin Anthropic models to Anthropic provider for prompt caching
