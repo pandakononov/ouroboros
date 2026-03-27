@@ -205,9 +205,23 @@ class LLMClient:
         choices = resp_dict.get("choices") or [{}]
         msg = (choices[0] if choices else {}).get("message") or {}
 
-        # Ollama thinking models may return content in "reasoning" field
+        # Ollama thinking models may return content in "reasoning" field.
+        # Extract only the final answer, not the thinking process.
         if not msg.get("content") and msg.get("reasoning"):
-            msg["content"] = msg["reasoning"]
+            reasoning = msg["reasoning"]
+            # Try to find the actual answer after thinking tags or markers
+            import re
+            # Look for content after common thinking delimiters
+            for pattern in [r'</think>\s*(.*)', r'\*\*(?:Final )?(?:Answer|Response)\*\*[:\s]*(.*)', r'\n\n---\n\n(.*)']:
+                match = re.search(pattern, reasoning, re.DOTALL)
+                if match and match.group(1).strip():
+                    msg["content"] = match.group(1).strip()
+                    break
+            # If no delimiter found, take the last paragraph as the answer
+            if not msg.get("content"):
+                paragraphs = [p.strip() for p in reasoning.split('\n\n') if p.strip()]
+                if paragraphs:
+                    msg["content"] = paragraphs[-1]
 
         # Extract cached_tokens from prompt_tokens_details if available
         if not usage.get("cached_tokens"):
