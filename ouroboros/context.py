@@ -141,63 +141,106 @@ def _build_memory_sections(memory: Memory) -> List[str]:
 
 
 def _summarize_old_chat(memory: Memory, entries: list) -> str:
-    """LLM-summarize older chat messages to save context window.
+    """Incremental LLM-summarize older chat messages.
 
-    Caches summary in dialogue_summary.md to avoid re-summarizing.
+    Strategy:
+    - Keeps a running summary in dialogue_summary.md
+    - On each call, checks how many new entries since last summarization
+    - If ≤5 new entries → skip (not worth an LLM call)
+    - If >5 new → "previous summary + new messages → updated summary"
+    - Full rebuild only on first run or if cache corrupted
+
+    Incremental is ~5x cheaper than rebuild but accumulates slight drift.
+    Full rebuild triggered every 500 entries to correct drift.
     """
     if not entries:
         return ""
 
-    # Check cache
     summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
-    cache_marker = f"<!-- entries:{len(entries)} -->"
+    n_entries = len(entries)
+
+    # Load cached state
+    prev_summary = ""
+    prev_count = 0
     if summary_path.exists():
         cached = read_text(summary_path)
-        if cache_marker in cached:
-            return cached.split(cache_marker)[-1].strip()
+        # Parse metadata line: <!-- summarized:N -->
+        import re as _re
+        match = _re.search(r'<!-- summarized:(\d+) -->', cached)
+        if match:
+            prev_count = int(match.group(1))
+            prev_summary = _re.sub(r'<!-- summarized:\d+ -->\n?', '', cached).strip()
 
-    # Build text to summarize
-    lines = []
-    for e in entries:
+    new_count = n_entries - prev_count
+
+    # Skip if <5 new messages (not worth LLM call)
+    if new_count <= 5 and prev_summary:
+        return prev_summary
+
+    # Full rebuild every 500 entries to correct accumulated drift
+    force_rebuild = (prev_count > 0 and n_entries % 500 < new_count)
+
+    # Build new messages text
+    new_entries = entries[-new_count:] if new_count > 0 else entries[-20:]
+    new_lines = []
+    for e in new_entries:
         d = "→" if str(e.get("direction", "")).lower() in ("out", "outgoing") else "←"
         text = str(e.get("text", ""))[:300]
-        lines.append(f"{d} {text}")
-    chat_text = "\n".join(lines)
+        new_lines.append(f"{d} {text}")
+    new_text = "\n".join(new_lines)
 
-    if not chat_text.strip():
-        return ""
+    if not new_text.strip() and prev_summary:
+        return prev_summary
 
     try:
         from ouroboros.llm import LLMClient
         light_model = os.environ.get("OUROBOROS_MODEL_LIGHT", "light")
         client = LLMClient()
+
+        if prev_summary and not force_rebuild:
+            # Incremental: merge previous summary with new messages
+            prompt = (
+                "Here is a conversation summary so far:\n\n"
+                f"{prev_summary}\n\n"
+                "Here are new messages since that summary:\n\n"
+                f"{new_text[:6000]}\n\n"
+                "Update the summary: keep key decisions, facts, preferences. "
+                "Remove outdated items. 5-10 bullet points. Russian. Concise."
+            )
+        else:
+            # Full rebuild
+            all_lines = []
+            for e in entries[-100:]:  # Cap at last 100 for rebuild
+                d = "→" if str(e.get("direction", "")).lower() in ("out", "outgoing") else "←"
+                text = str(e.get("text", ""))[:300]
+                all_lines.append(f"{d} {text}")
+            prompt = (
+                "Summarize this conversation in 5-10 bullet points. "
+                "Keep key decisions, facts, and user preferences. "
+                "Write in Russian. Be concise.\n\n" + "\n".join(all_lines)[:8000]
+            )
+
         resp, _ = client.chat(
-            messages=[{
-                "role": "user",
-                "content": (
-                    "Summarize this conversation in 5-10 bullet points. "
-                    "Keep key decisions, facts, and user preferences. "
-                    "Write in Russian. Be concise.\n\n" + chat_text[:8000]
-                ),
-            }],
+            messages=[{"role": "user", "content": prompt}],
             model=light_model,
             reasoning_effort="low",
             max_tokens=800,
         )
         summary = (resp.get("content") or "").strip()
         if summary:
-            # Cache it
             pathlib.Path(summary_path).write_text(
-                f"{cache_marker}\n{summary}", encoding="utf-8"
+                f"<!-- summarized:{n_entries} -->\n{summary}", encoding="utf-8"
             )
             return summary
     except Exception:
         pass
 
-    # Fallback: just take first/last lines
-    if len(lines) > 10:
-        return "\n".join(lines[:5] + ["..."] + lines[-5:])
-    return "\n".join(lines)
+    # Fallback: return previous summary or raw lines
+    if prev_summary:
+        return prev_summary
+    if len(new_lines) > 10:
+        return "\n".join(new_lines[:5] + ["..."] + new_lines[-5:])
+    return "\n".join(new_lines)
 
 
 def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[str]:
