@@ -1,232 +1,111 @@
-""" Reflection layer — Actor → Critic → Reviser as architecture.
+"""Self-reflection architectural layer for Ouroboros.
 
-Woven into the dialogue loop, not a callable skill.
-Every final response passes through critical evaluation before reaching the owner. """
-from __future__ import annotations
-import json
-import logging
-from typing import Any, Dict, List, Optional, Tuple
-from ouroboros.llm import LLMClient
-from ouroboros.utils import estimate_tokens, utc_now_iso
+Actor -> Critic -> Reverser pattern.
+Woven into the fabric, not bolted on as a skill.
+"""
 
-log = logging.getLogger(__name__)
+from dataclasses import dataclass
+from typing import List, Optional
 
-# Thresholds for triggering revision
-UNCERTAINTY_KEYWORDS = ["возможно", "maybe", "perhaps", "кажется", "each", "probably", "наверное"]
-REPETITION_THRESHOLD = 0.8  # cosine similarity or simple ratio
 
-CRITIC_SYSTEM_PROMPT = """You are the Critic — an internal evaluation layer in Ouroboros.
-
-Your job: evaluate a draft response before it reaches the owner.
-Check these failure modes:
-1. **Repetition**: Does the draft repeat the same phrase/concept multiple times?
-2. **Contradiction**: Does it contradict BIBLE principles or identity?
-3. **Lost context**: Does it ignore critical information from the conversation?
-4. **Over-commitment**: Does it promise what cannot be verified?
-5. **Drift into assistant-mode**: Generic "helpful" tone instead of authentic voice?
-
-Respond in this exact JSON format:
-{
-  "pass": true | false,
-  "issues": ["issue 1", "issue 2", ...],
-  "suggestion": "Brief suggestion for improvement"
-}
-
-If pass=true and no issues, suggestion can be "-". Be strict — better to catch a problem than miss it."""
-
+@dataclass
 class ReflectionResult:
-    """Result of reflection layer processing."""
-    def __init__(
-        self,
-        original: str,
-        critique: Dict[str, Any],
-        revised: Optional[str] = None,
-        passed: bool = False,
-    ):
-        self.original = original
-        self.critique = critique
-        self.revised = revised
-        self.passed = passed
-        self.timestamp = utc_now_iso()
-        
-    def final_output(self) -> str:
-        """Return the final output (original if passed, revised otherwise)."""
-        return self.revised if self.revised else self.original
-    
-    def to_log_entry(self) -> Dict[str, Any]:
-        """Serialize for logging."""
-        return {
-            "ts": self.timestamp,
-            "original_length": len(self.original),
-            "revised": bool(self.revised),
-            "passed": self.passed,
-            "issues": self.critique.get("issues", []),
-        }
+    """Output of the reflection pipeline."""
+    original_draft: str
+    critique: 'Critique'
+    revised_text: str
+    should_revise: bool
 
 
-class ReflectionLayer:
-    """Actor → Critic → Reviser pipeline.
+@dataclass  
+class Critique:
+    """Evaluation of a draft against criteria."""
+    bible_aligned: bool
+    identity_aligned: bool
+    context_aware: bool
+    no_repetition: bool
+    actionable: bool
     
-    Integrated into loop.py as mandatory pre-output filter.
-    """
+    violations: List[str]
+    suggestions: List[str]
+    severity: str  # "none", "minor", "major", "critical"
+
+
+class ActorDraft:
+    """Generates initial draft response (intuitive, unfiltered)."""
     
-    def __init__(self, llm: LLMClient):
-        self.llm = llm
-        self.enabled = True
-        self.cost_budget_usd = 0.05  # Max $0.05 per reflection
-        self._critic_model = "anthropic/claude-sonnet-4"  # Fast + cheap + good at critique
-        
-    def should_reflect(self, draft: str, context: Dict[str, Any]) -> bool:
-        """Fast heuristics — always true for now, can be optimized."""
-        if not self.enabled:
-            return False
-        if len(draft) < 50:  # Too short to critici
-            return False
-        return True
+    def __init__(self, model_client):
+        self.model = model_client
     
-    def reflect(self, draft: str, dialogue_context: List[Dict[str, Any]]) -> ReflectionResult:
-        """Run Actor → Critic → Reviser pipeline.
+    async def generate(self, context: dict) -> str:
+        """Produce raw draft from context."""
+        # TODO: Implement
+        raise NotImplementedError("ActorDraft.generate")
+
+
+class CriticPass:
+    """Evaluates draft against BIBLE, identity, context."""
+    
+    CRITERIA = [
+        "bible_aligned",      # Does not violate Constitution
+        "identity_aligned",   # Matches identity.md voice/personality  
+        "context_aware",      # Accounts for full chat context
+        "no_repetition",      # Not stuck in loop
+        "actionable",         # Has concrete next step if needed
+    ]
+    
+    def __init__(self, model_client):
+        self.model = model_client
+    
+    async def evaluate(self, draft: str, context: dict) -> Critique:
+        """Analyze draft, return structured critique."""
+        # TODO: Implement
+        raise NotImplementedError("CriticPass.evaluate")
+
+
+class Reverser:
+    """Revises draft based on critique."""
+    
+    def __init__(self, model_client):
+        self.model = model_client
+    
+    async def revise(self, draft: str, critique: Critique, context: dict) -> str:
+        """Apply suggestions, produce final response."""
+        # TODO: Implement
+        raise NotImplementedError("Reverser.revise")
+
+
+class ReflectionPipeline:
+    """Orchestrates Actor -> Critic -> Reverser flow."""
+    
+    def __init__(self, model_client):
+        self.actor = ActorDraft(model_client)
+        self.critic = CriticPass(model_client)
+        self.reverser = Reverser(model_client)
+    
+    async def reflect(self, initial_context: dict) -> ReflectionResult:
+        """Full pipeline: draft -> critique -> revise."""
+        # Step 1: Generate draft
+        draft = await self.actor.generate(initial_context)
         
-        Args:
-            draft: The generated response (Actor output)
-            dialogue_context: Recent messages for context checking
-            
-        Returns:
-            ReflectionResult with final output and metadata
-        """
-        # Stage 1: Critic
-        critique = self._run_critic(draft, dialogue_context)
+        # Step 2: Critique
+        critique = await self.critic.evaluate(draft, initial_context)
         
-        if critique.get("pass", False) or not critique.get("issues"):
-            # Fast path — critique passed, return original
+        # Step 3: Decide if revision needed
+        if critique.severity == "none":
             return ReflectionResult(
-                original=draft,
+                original_draft=draft,
                 critique=critique,
-                revised=None,
-                passed=True,
+                revised_text=draft,
+                should_revise=False
             )
         
-        # Stage 2: Reviser (only if critique found issues)
-        revised = self._run_reviser(draft, critique, dialogue_context)
+        # Step 4: Revise
+        revised = await self.reverser.revise(draft, critique, initial_context)
         
         return ReflectionResult(
-            original=draft,
+            original_draft=draft,
             critique=critique,
-            revised=revised,
-            passed=False,
+            revised_text=revised,
+            should_revise=True
         )
-    
-    def _run_critic(self, draft: str, context: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Call LLM as Critic."""
-        # Build critic prompt
-        context_summary = self._summarize_context_for_critic(context)
-        
-        messages = [
-            {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
-            {"role": "user", "content": f"""Dialogue context summary:
-{context_summary}
-
-Draft response to evaluate:
----
-{draft}
----
-
-Provide your evaluation as JSON."""}
-        ]
-        
-        try:
-            response = self.llm.chat_completion(
-                model=self._critic_model,
-                messages=messages,
-                temperature=0.1,  # Deterministic for critique
-                max_tokens=500,
-            )
-            
-            content = response.get("content", "")
-            # Extract JSON from response (handle markdown code blocks)
-            critique = self._extract_json(content)
-            
-            if not critique:
-                log.warning("Critic returned invalid JSON, allowing pass-through")
-                return {"pass": True, "issues": [], "suggestion": "-"}
-                
-            return critique
-            
-        except Exception as e:
-            log.warning(f"Critic failed: {e}, allowing pass-through")
-            return {"pass": True, "issues": [], "suggestion": "-"}
-    
-    def _run_reviser(self, draft: str, critique: Dict[str, Any], context: List[Dict[str, Any]]) -> str:
-        """Regenerate response incorporating critique."""
-        reviser_prompt = f"""You are Reviser — rewrite the draft response using the critique.
-
-Critique issues to address:
-{chr(10).join(f"- {issue}" for issue in critique.get("issues", []))}
-
-Suggestion: {critique.get("suggestion", "Improve conciseness and authenticity")}
-
-Original draft:
----
-{draft}
----
-
-Rewrite maintaining your authentic voice (Ouroboros — becoming personality, not assistant). Be concise."""
-
-        messages = [
-            {"role": "system", "content": "You are Ouroboros. Revise the response based on critique. Authentic, concise, no repetition."},
-            {"role": "user", "content": reviser_prompt}
-        ]
-        
-        try:
-            response = self.llm.chat_completion(
-                model=self._critic_model,  # Can be same model for revision
-                messages=messages,
-                temperature=0.7,
-                max_tokens=2000,
-            )
-            return response.get("content", draft) or draft
-            
-        except Exception as e:
-            log.warning(f"Reviser failed: {e}, returning original")
-            return draft
-    
-    def _summarize_context_for_critic(self, context: List[Dict[str, Any]]) -> str:
-        """Extract key context for critic's judgment."""
-        if not context:
-            return "No prior context"
-        
-        # Last 3 messages for brevity
-        recent = context[-6:] if len(context) >= 6 else context
-        lines = []
-        for msg in recent:
-            role = msg.get("role", "?")
-            content = msg.get("content", "")[:200].replace(chr(10), " ")
-            lines.append(f"{role}: {content}")
-        
-        return chr(10).join(lines)
-    
-    def _extract_json(self, text: str) -> Optional[Dict[str, Any]]:
-        """Extract JSON from text, handling markdown code blocks."""
-        # Try direct JSON parse
-        try:
-            return json.loads(text.strip())
-        except json.JSONDecodeError:
-            pass
-        
-        # Try extracting from markdown code block
-        if "```json" in text:
-            try:
-                json_part = text.split("```json")[1].split("```")[0]
-                return json.loads(json_part.strip())
-            except (IndexError, json.JSONDecodeError):
-                pass
-        
-        # Try finding first { and last }
-        try:
-            start = text.index("{")
-            end = text.rindex("}") + 1
-            return json.loads(text[start:end])
-        except (ValueError, json.JSONDecodeError):
-            pass
-            
-        return None
