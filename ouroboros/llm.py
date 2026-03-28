@@ -311,7 +311,7 @@ class LLMClient:
                 mime = img.get("mime", "image/png")
                 content.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{img['base64']]}"},
+                    "image_url": {"url": f"data:{mime};base64,{img['base64']}"},
                 })
             else:
                 log.warning("vision_query: skipping image with unknown format: %s", list(img.keys()))
