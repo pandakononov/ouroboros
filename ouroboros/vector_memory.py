@@ -55,6 +55,9 @@ class VectorMemory:
         self._embed_model = embed_model
         self._client: Optional[chromadb.PersistentClient] = None
         self._collections: Dict[str, Any] = {}
+        # Dirty flag: tracks writes since last MEMORY.md sync
+        self._writes_since_sync: int = 0
+        self._SYNC_EVERY_N_WRITES: int = 10  # Update MEMORY.md every 10 writes
 
     def _get_client(self) -> chromadb.PersistentClient:
         if self._client is None:
@@ -181,6 +184,18 @@ class VectorMemory:
         )
 
         log.info(f"[memory] stored in {store}: {text[:80]}...")
+
+        # Dirty flag: trigger MEMORY.md sync after N writes
+        self._writes_since_sync += 1
+        if self._writes_since_sync >= self._SYNC_EVERY_N_WRITES:
+            self._writes_since_sync = 0
+            try:
+                from ouroboros.cognitive_memory import update_core_memory
+                update_core_memory(self)
+                log.info("[memory] dirty flag: synced MEMORY.md after %d writes", self._SYNC_EVERY_N_WRITES)
+            except Exception:
+                pass
+
         return mem_id
 
     def remember_episode(self, text: str, metadata: Optional[Dict] = None) -> str:

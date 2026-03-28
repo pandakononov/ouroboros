@@ -122,15 +122,9 @@ def _build_memory_sections(memory: Memory) -> List[str]:
     # falls back to scratchpad-based recall
     try:
         from ouroboros.cognitive_memory import contextual_recall as _ctx_recall
-        # _last_user_message is injected by the caller if available
         last_msg = getattr(memory, '_last_user_message', '') or ''
-        if last_msg:
-            recall_text = _ctx_recall(last_msg, top_k=5)
-        else:
-            from ouroboros.vector_memory import get_memory as _get_vmem
-            vmem = _get_vmem()
-            query = (scratchpad_raw or "")[:500] + " " + (identity_raw or "")[:500]
-            recall_text = vmem.recall_text(query, top_k=5, min_score=0.4) if query.strip() else ""
+        fallback = (scratchpad_raw or "")[:300] + " " + (identity_raw or "")[:200]
+        recall_text = _ctx_recall(last_msg, fallback_context=fallback, top_k=5)
         if recall_text and "(no relevant memories" not in recall_text:
             sections.append("## Recalled Memories\n\n" + clip_text(recall_text, 5000))
     except Exception:

@@ -382,17 +382,34 @@ def build_reflection_context(max_tokens: int = 30000) -> str:
 
 # ── Contextual recall ─────────────────────────────────────────────────
 
-def contextual_recall(message_text: str, top_k: int = 5) -> str:
+def contextual_recall(
+    message_text: str,
+    fallback_context: str = "",
+    top_k: int = 5,
+    min_message_len: int = 30,
+) -> str:
     """Recall memories relevant to the current incoming message.
 
-    Called on every message to inject relevant context.
-    Uses hybrid scoring (semantic × freshness).
-    """
-    if not message_text or len(message_text) < 10:
-        return ""
+    For short/ambiguous messages ("окей", "продолжай"), falls back to
+    scratchpad/recent context as query to avoid mushy recall.
 
+    Args:
+        message_text: current user message
+        fallback_context: scratchpad or last N tokens of dialog (used if message too short)
+        top_k: max memories to return
+        min_message_len: messages shorter than this use fallback
+    """
     mem = get_memory()
-    return mem.recall_text(message_text, top_k=top_k, min_score=0.35)
+
+    # Short or ambiguous messages → use fallback context
+    query = message_text
+    if not query or len(query.strip()) < min_message_len:
+        if fallback_context:
+            query = fallback_context[:500]
+        else:
+            return ""  # Nothing to query with
+
+    return mem.recall_text(query, top_k=top_k, min_score=0.35)
 
 
 # ── Episodic → Semantic promotion ────────────────────────────────────
@@ -443,11 +460,6 @@ def promote_recurring_episodes() -> List[str]:
                     cluster.append(similar["documents"][0][j])
 
             if len(cluster) >= PROMOTION_THRESHOLD:
-                # Extract common theme — use shortest entry as the "fact"
-                fact = min(cluster, key=len)
-                # Strip timestamp prefix
-                clean_fact = fact.split("] ", 1)[-1] if "] " in fact else fact
-
                 # Check if already in semantic
                 existing = semantic.query(
                     query_embeddings=[all_eps["embeddings"][i]],
@@ -456,6 +468,33 @@ def promote_recurring_episodes() -> List[str]:
                 )
                 if existing["distances"][0] and (1.0 - existing["distances"][0][0] / 2.0) > 0.9:
                     continue  # Already exists in semantic
+
+                # LLM quality control: extract precise fact from cluster
+                cluster_text = "\n".join(f"- {c[:200]}" for c in cluster[:5])
+                try:
+                    from ouroboros.llm import LLMClient
+                    light_model = os.environ.get("OUROBOROS_MODEL_LIGHT", "light")
+                    client = LLMClient()
+                    resp, _ = client.chat(
+                        messages=[{
+                            "role": "user",
+                            "content": (
+                                "These episodic memories share a theme. Extract ONE precise, "
+                                "timeless fact (not event). Reply with just the fact, 1-2 sentences. "
+                                "If no clear fact exists, reply SKIP.\n\n" + cluster_text
+                            ),
+                        }],
+                        model=light_model,
+                        reasoning_effort="low",
+                        max_tokens=200,
+                    )
+                    clean_fact = (resp.get("content") or "").strip()
+                    if not clean_fact or "SKIP" in clean_fact.upper():
+                        continue  # LLM says no clear fact
+                except Exception:
+                    # LLM unavailable — fallback to shortest entry
+                    fact = min(cluster, key=len)
+                    clean_fact = fact.split("] ", 1)[-1] if "] " in fact else fact
 
                 mem_id = mem.remember(
                     f"[promoted from {len(cluster)} episodes] {clean_fact}",
