@@ -171,16 +171,23 @@ class VectorMemory:
         stores: Optional[List[str]] = None,
         top_k: int = 10,
         min_score: float = 0.3,
+        use_hybrid_score: bool = True,
     ) -> List[Dict[str, Any]]:
         """Retrieve relevant memories across stores.
 
-        Returns list of {text, store, score, metadata} sorted by relevance.
+        Uses hybrid scoring: semantic_similarity × decay_relevance.
+        This ensures fresh memories rank higher than stale but topically similar ones.
+
+        Returns list of {text, store, score, metadata} sorted by hybrid relevance.
         """
+        import math as _math
+
         if stores is None:
             stores = list(STORES)
 
         query_embedding = self._embed([query])[0]
         results = []
+        now = time.time()
 
         for store in stores:
             try:
@@ -190,29 +197,66 @@ class VectorMemory:
 
                 search = collection.query(
                     query_embeddings=[query_embedding],
-                    n_results=min(top_k, collection.count()),
+                    n_results=min(top_k * 2, collection.count()),  # fetch more, filter later
                     include=["documents", "metadatas", "distances"],
                 )
 
                 for i, doc in enumerate(search["documents"][0]):
                     distance = search["distances"][0][i]
                     # ChromaDB cosine distance: 0 = identical, 2 = opposite
-                    score = 1.0 - (distance / 2.0)
-                    if score < min_score:
+                    semantic_score = 1.0 - (distance / 2.0)
+                    if semantic_score < min_score * 0.7:  # loose filter, hybrid will tighten
                         continue
 
                     meta = search["metadatas"][0][i]
+
+                    if use_hybrid_score:
+                        # Lazy decay: calculate freshness on the fly
+                        created = meta.get("last_accessed", meta.get("created_at", ""))
+                        days_old = 30.0  # default
+                        if created:
+                            try:
+                                from datetime import datetime as _dt, timezone as _tz
+                                created_dt = _dt.fromisoformat(created.replace("Z", "+00:00"))
+                                days_old = (now - created_dt.timestamp()) / 86400
+                            except (ValueError, TypeError):
+                                pass
+
+                        access_count = int(meta.get("access_count", 1))
+                        store_weight = STORE_WEIGHTS.get(store, 1.0)
+                        if store_weight == float("inf"):
+                            decay_factor = 1.0  # vault never decays
+                        else:
+                            decay_factor = _math.exp(-0.03 * days_old) * _math.log2(access_count + 1) * store_weight
+                            decay_factor = min(1.0, max(0.01, decay_factor))
+
+                        hybrid_score = semantic_score * decay_factor
+                    else:
+                        hybrid_score = semantic_score
+
+                    if hybrid_score < min_score:
+                        continue
+
+                    # Update access metadata (lazy touch)
+                    meta["last_accessed"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    meta["access_count"] = str(int(meta.get("access_count", 0)) + 1)
+                    try:
+                        collection.update(ids=[search["ids"][0][i]], metadatas=[meta])
+                    except Exception:
+                        pass
+
                     results.append({
                         "text": doc,
                         "store": store,
-                        "score": round(score, 3),
+                        "score": round(hybrid_score, 3),
+                        "semantic_score": round(semantic_score, 3),
                         "id": search["ids"][0][i],
                         "metadata": meta,
                     })
             except Exception as e:
                 log.warning(f"[memory] recall from {store} failed: {e}")
 
-        # Sort by score descending
+        # Sort by hybrid score descending
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 

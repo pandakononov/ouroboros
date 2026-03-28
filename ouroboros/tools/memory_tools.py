@@ -63,18 +63,28 @@ def _memory_stats(ctx: ToolContext) -> str:
 
 
 def _memory_reflect(ctx: ToolContext) -> str:
-    """Run a reflection cycle — consolidate and examine memories."""
-    from ouroboros.cognitive_memory import build_reflection_context, run_decay_sweep
+    """Run a reflection cycle — decay sweep, consolidate, update core memory."""
+    from ouroboros.cognitive_memory import (
+        build_reflection_context, run_decay_sweep,
+        update_core_memory, vault_eviction_check,
+    )
 
-    # Run decay sweep first
+    # 1. Run decay sweep
     decay_stats = run_decay_sweep()
 
-    # Build reflection context
+    # 2. Check vault size
+    vault_evictions = vault_eviction_check()
+
+    # 3. Update MEMORY.md from ChromaDB state
+    update_core_memory()
+
+    # 4. Build reflection context
     context = build_reflection_context()
 
     return json.dumps({
         "status": "reflection_ready",
         "decay_sweep": decay_stats,
+        "vault_eviction_candidates": len(vault_evictions),
         "context_preview": context[:2000] + "...",
         "instruction": "Use this context to write an internal monologue reflection. "
                        "Be genuine, not performative. Write in Russian.",

@@ -62,26 +62,55 @@ def detect_trigger(text: str) -> Optional[str]:
 # ── Memory routing (classify store) ──────────────────────────────────
 
 def classify_memory(text: str, context: str = "") -> Dict[str, Any]:
-    """Classify memory into appropriate store using heuristics.
+    """Classify memory into appropriate store.
+
+    Uses heuristics first (fast), falls back to LLM for ambiguous cases.
+    Key distinction: episodic = time-bound event, semantic = timeless fact.
+    "Python лучше JS для этой задачи" → semantic (it's a learned fact)
+    "Сегодня решили использовать Python" → episodic (time-bound event)
 
     Returns: {store, tags, confidence, core_update}
     """
     lower = text.lower()
 
-    # Vault indicators
+    # Vault indicators (explicit user request to pin)
     if any(w in lower for w in ["важно", "никогда не забывай", "critical", "important", "vault", "закрепи"]):
         return {"store": "vault", "tags": ["pinned"], "confidence": "high", "core_update": True}
 
-    # Procedural indicators
-    if any(w in lower for w in ["как сделать", "how to", "workflow", "процедура", "алгоритм", "шаги", "steps"]):
-        return {"store": "procedural", "tags": ["workflow"], "confidence": "medium", "core_update": False}
+    # Procedural indicators (how-to, steps, workflows)
+    if any(w in lower for w in ["как сделать", "how to", "workflow", "процедура", "алгоритм", "шаги", "steps", "рецепт"]):
+        return {"store": "procedural", "tags": ["workflow"], "confidence": "high", "core_update": False}
 
-    # Episodic indicators (events, dates, "happened")
-    if any(w in lower for w in ["произошло", "случилось", "встреча", "событие", "happened", "meeting", "today"]):
-        return {"store": "episodic", "tags": ["event"], "confidence": "medium", "core_update": False}
+    # Episodic indicators (time-bound: dates, meetings, "today", "happened")
+    has_time = any(w in lower for w in [
+        "сегодня", "вчера", "завтра", "только что", "произошло", "случилось",
+        "встреча", "событие", "решили", "договорились",
+        "today", "yesterday", "tomorrow", "just now", "happened", "meeting",
+        "decided", "agreed",
+    ])
 
-    # Default: semantic (facts, knowledge)
-    return {"store": "semantic", "tags": ["fact"], "confidence": "medium", "core_update": False}
+    # Semantic indicators (timeless facts, preferences, knowledge)
+    has_fact = any(w in lower for w in [
+        "лучше", "хуже", "предпочитаю", "всегда", "никогда", "обычно",
+        "потому что", "означает", "является", "это ",
+        "better", "worse", "prefer", "always", "never", "usually",
+        "because", "means", "is a",
+    ])
+
+    if has_time and not has_fact:
+        return {"store": "episodic", "tags": ["event"], "confidence": "high", "core_update": False}
+
+    if has_fact and not has_time:
+        return {"store": "semantic", "tags": ["fact"], "confidence": "high", "core_update": False}
+
+    if has_time and has_fact:
+        # Ambiguous: "Сегодня решили что Python лучше" — both time-bound AND a fact
+        # Store in BOTH: episodic (the event) + semantic (the learned fact)
+        return {"store": "semantic", "tags": ["fact", "decision"], "confidence": "medium",
+                "core_update": False, "also_episodic": True}
+
+    # Default: semantic
+    return {"store": "semantic", "tags": ["general"], "confidence": "low", "core_update": False}
 
 
 # ── Auto-capture from conversations ──────────────────────────────────
@@ -111,8 +140,9 @@ def should_auto_capture(text: str) -> bool:
 
 
 def auto_capture(text: str, direction: str = "in", timestamp: str = "") -> Optional[str]:
-    """Auto-capture a message to episodic memory if it matches patterns.
+    """Auto-capture a message to appropriate memory store if it matches patterns.
 
+    Handles dual-store for ambiguous cases (also_episodic flag).
     Returns memory_id if captured, None otherwise.
     """
     if not should_auto_capture(text):
@@ -130,8 +160,57 @@ def auto_capture(text: str, direction: str = "in", timestamp: str = "") -> Optio
         metadata={"auto_captured": "true", "direction": direction},
         source="auto_capture",
     )
+
+    # Dual-store: also store in episodic if it's a time-bound decision
+    if classification.get("also_episodic"):
+        mem.remember(
+            memory_text,
+            store="episodic",
+            metadata={"auto_captured": "true", "direction": direction, "linked_to": mem_id},
+            source="auto_capture_dual",
+        )
+
     log.info(f"[cognitive] auto-captured to {classification['store']}: {text[:60]}...")
     return mem_id
+
+
+# ── Vault management ���────────────────────────────────────────────────
+
+VAULT_MAX_SIZE = 100  # Hard cap on vault entries
+
+def vault_eviction_check() -> List[str]:
+    """Check vault size and suggest evictions if over limit.
+
+    Returns list of candidate IDs for eviction (oldest, lowest access).
+    Auto-capture cannot write to vault — only explicit user pin can.
+    """
+    mem = get_memory()
+    try:
+        collection = mem._get_collection("vault")
+        count = collection.count()
+        if count <= VAULT_MAX_SIZE:
+            return []
+
+        # Get all vault entries sorted by access count (ascending)
+        results = collection.get(include=["metadatas"])
+        entries = []
+        for i, meta in enumerate(results["metadatas"]):
+            entries.append({
+                "id": results["ids"][i],
+                "access_count": int(meta.get("access_count", 1)),
+                "created_at": meta.get("created_at", ""),
+            })
+
+        # Sort by access count ascending, then by age descending
+        entries.sort(key=lambda e: (e["access_count"], e["created_at"]))
+
+        # Suggest bottom 20% for eviction
+        evict_count = count - VAULT_MAX_SIZE + 10  # evict enough + buffer
+        return [e["id"] for e in entries[:evict_count]]
+
+    except Exception as e:
+        log.warning(f"[cognitive] vault eviction check failed: {e}")
+        return []
 
 
 # ── Decay model ──────────────────────────────────────────────────────
@@ -318,3 +397,84 @@ Memory State:
 
 Write your reflection as an internal monologue in Russian (Яр's language).
 Be genuine, not performative. Trail off naturally — don't wrap up neatly."""
+
+
+def update_core_memory(mem: Optional[Any] = None) -> bool:
+    """Dynamically rewrite MEMORY.md based on current ChromaDB state.
+
+    Called after reflection to keep MEMORY.md in sync with actual memories.
+    """
+    if mem is None:
+        mem = get_memory()
+
+    core_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "local_data", "memory", "MEMORY.md"
+    )
+
+    try:
+        # Read current MEMORY.md
+        current = ""
+        if os.path.exists(core_path):
+            with open(core_path) as f:
+                current = f.read()
+
+        # Get fresh stats
+        stats = mem.stats()
+
+        # Get recent semantic memories (top facts)
+        semantic_coll = mem._get_collection("semantic")
+        recent_facts = []
+        if semantic_coll.count() > 0:
+            results = semantic_coll.get(include=["documents", "metadatas"], limit=20)
+            for doc, meta in zip(results["documents"], results["metadatas"]):
+                score = float(meta.get("decay_score", 0.5))
+                if score > 0.3:
+                    # Extract just the content, strip timestamps
+                    clean = doc.split("] ", 1)[-1] if "] " in doc else doc
+                    recent_facts.append(clean[:150])
+
+        # Get vault items
+        vault_coll = mem._get_collection("vault")
+        vault_items = []
+        if vault_coll.count() > 0:
+            results = vault_coll.get(include=["documents"], limit=20)
+            for doc in results["documents"]:
+                clean = doc.split("] ", 1)[-1] if "] " in doc else doc
+                vault_items.append(clean[:150])
+
+        # Update Active Context section with stats
+        stats_line = f"- Memory stats: {stats['total']} total ({stats['episodic']} episodic, {stats['semantic']} semantic, {stats['procedural']} procedural, {stats['vault']} vault)"
+
+        # Only update if we have meaningful data
+        if stats["total"] > 0:
+            # Append stats and recent facts to Critical Facts section
+            import re
+            if "## Critical Facts" in current:
+                # Replace Critical Facts section
+                new_facts = "## Critical Facts\n<!-- Dynamic — updated by reflection -->\n"
+                new_facts += stats_line + "\n"
+                for fact in recent_facts[:5]:
+                    new_facts += f"- {fact}\n"
+                if vault_items:
+                    new_facts += "\n### Vault (pinned)\n"
+                    for item in vault_items[:5]:
+                        new_facts += f"- 📌 {item}\n"
+
+                current = re.sub(
+                    r"## Critical Facts.*?(?=\n## |\Z)",
+                    new_facts + "\n",
+                    current,
+                    flags=re.DOTALL,
+                )
+
+            with open(core_path, "w") as f:
+                f.write(current)
+
+            log.info(f"[cognitive] updated MEMORY.md with {stats['total']} memories")
+            return True
+
+    except Exception as e:
+        log.warning(f"[cognitive] failed to update MEMORY.md: {e}")
+
+    return False
