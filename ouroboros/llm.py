@@ -1,10 +1,8 @@
 """
 Ouroboros — LLM client.
-
 The only module that communicates with the LLM API (OpenRouter).
-Contract: chat(), default_model(), available_models(), add_usage().
+Contract: chat(), chat_completion(), default_model(), available_models(), add_usage().
 """
-
 from __future__ import annotations
 
 import logging
@@ -39,13 +37,12 @@ def add_usage(total: Dict[str, Any], usage: Dict[str, Any]) -> None:
 def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
     """
     Fetch current pricing from OpenRouter API.
-
     Returns dict of {model_id: (input_per_1m, cached_per_1m, output_per_1m)}.
     Returns empty dict on failure.
     """
     import logging
-    log = logging.getLogger("ouroboros.llm")
 
+    log = logging.getLogger("ouroboros.llm")
     try:
         import requests
     except ImportError:
@@ -56,7 +53,6 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
         url = "https://openrouter.ai/api/v1/models"
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
-
         data = resp.json()
         models = data.get("data", [])
 
@@ -68,11 +64,9 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
             model_id = model.get("id", "")
             if not model_id.startswith(prefixes):
                 continue
-
             pricing = model.get("pricing", {})
             if not pricing or not pricing.get("prompt"):
                 continue
-
             # OpenRouter pricing is in dollars per token (raw values)
             raw_prompt = float(pricing.get("prompt", 0))
             raw_completion = float(pricing.get("completion", 0))
@@ -89,14 +83,15 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
 
             # Sanity check: skip obviously wrong prices
             if prompt_price > 1000 or completion_price > 1000:
-                log.warning(f"Skipping {model_id}: prices seem wrong (prompt={prompt_price}, completion={completion_price})")
+                log.warning(
+                    f"Skipping {model_id}: prices seem wrong (prompt={prompt_price}, completion={completion_price})"
+                )
                 continue
 
             pricing_dict[model_id] = (prompt_price, cached_price, completion_price)
 
         log.info(f"Fetched pricing for {len(pricing_dict)} models from OpenRouter")
         return pricing_dict
-
     except (requests.RequestException, ValueError, KeyError) as e:
         log.warning(f"Failed to fetch OpenRouter pricing: {e}")
         return {}
@@ -119,6 +114,7 @@ class LLMClient:
     def _get_client(self):
         if self._client is None:
             from openai import OpenAI
+
             self._client = OpenAI(
                 base_url=self._base_url,
                 api_key=self._api_key,
@@ -133,6 +129,7 @@ class LLMClient:
         """Fetch cost from OpenRouter Generation API as fallback."""
         try:
             import requests
+
             url = f"{self._base_url.rstrip('/')}/generation?id={generation_id}"
             resp = requests.get(url, headers={"Authorization": f"Bearer {self._api_key}"}, timeout=5)
             if resp.status_code == 200:
@@ -153,6 +150,28 @@ class LLMClient:
             pass
         return None
 
+    def chat_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Simple non-tool chat completion.
+        
+        Returns: (content_string, usage_dict)
+        """
+        msg, usage = self.chat(
+            messages=messages,
+            model=model,
+            tools=None,
+            reasoning_effort="low",
+            max_tokens=max_tokens,
+        )
+        content = msg.get("content") or ""
+        return content, usage
+
     def chat(
         self,
         messages: List[Dict[str, Any]],
@@ -165,7 +184,6 @@ class LLMClient:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
-
         _is_local = "localhost" in self._base_url or "192.168." in self._base_url or "11434" in self._base_url
 
         extra_body: Dict[str, Any] = {}
@@ -188,6 +206,7 @@ class LLMClient:
             "max_tokens": max_tokens,
             "extra_body": extra_body,
         }
+
         if tools:
             # Add cache_control to last tool for Anthropic prompt caching
             # This caches all tool schemas (they never change between calls)
@@ -211,8 +230,13 @@ class LLMClient:
             reasoning = msg["reasoning"]
             # Try to find the actual answer after thinking tags or markers
             import re
+
             # Look for content after common thinking delimiters
-            for pattern in [r'</think>\s*(.*)', r'\*\*(?:Final )?(?:Answer|Response)\*\*[:\s]*(.*)', r'\n\n---\n\n(.*)']:
+            for pattern in [
+                r'</think>\s*(.*)',
+                r'\*\*(?:Final )?(?:Answer|Response)\*\*[:\s]*(.*)',
+                r'\n\n---\n\n(.*)',
+            ]:
                 match = re.search(pattern, reasoning, re.DOTALL)
                 if match and match.group(1).strip():
                     msg["content"] = match.group(1).strip()
@@ -235,9 +259,11 @@ class LLMClient:
         if not usage.get("cache_write_tokens"):
             prompt_details_for_write = usage.get("prompt_tokens_details") or {}
             if isinstance(prompt_details_for_write, dict):
-                cache_write = (prompt_details_for_write.get("cache_write_tokens")
-                              or prompt_details_for_write.get("cache_creation_tokens")
-                              or prompt_details_for_write.get("cache_creation_input_tokens"))
+                cache_write = (
+                    prompt_details_for_write.get("cache_write_tokens")
+                    or prompt_details_for_write.get("cache_creation_tokens")
+                    or prompt_details_for_write.get("cache_creation_input_tokens")
+                )
                 if cache_write:
                     usage["cache_write_tokens"] = int(cache_write)
 
@@ -271,8 +297,7 @@ class LLMClient:
             max_tokens: Max response tokens
             reasoning_effort: Effort level
 
-        Returns:
-            (text_response, usage_dict)
+        Returns: (text_response, usage_dict)
         """
         # Build multipart content
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -286,7 +311,7 @@ class LLMClient:
                 mime = img.get("mime", "image/png")
                 content.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{img['base64']}"},
+                    "image_url": {"url": f"data:{mime};base64,{img['base64']]}"},
                 })
             else:
                 log.warning("vision_query: skipping image with unknown format: %s", list(img.keys()))
