@@ -614,56 +614,69 @@ def extract_relations(text: str, entities: List[Dict[str, str]]) -> List[Dict[st
             if from_entity and to_entity and from_entity != to_entity:
                 relations.append({"from": from_entity, "relation": rel_type, "to": to_entity})
 
-    # If no pattern matched but we have 2+ entities, infer co-occurrence
-    if not relations and len(entities) >= 2:
-        for i in range(len(entities)):
-            for j in range(i + 1, len(entities)):
-                relations.append({
-                    "from": entities[i]["name"],
-                    "relation": "co_mentioned",
-                    "to": entities[j]["name"],
-                })
+    # If no pattern matched but we have exactly 2 entities, infer co-occurrence
+    # Only for pairs (not N×N) to prevent graph noise explosion
+    if not relations and len(entities) == 2:
+        relations.append({
+            "from": entities[0]["name"],
+            "relation": "co_mentioned",
+            "to": entities[1]["name"],
+        })
 
     return relations
 
 
-def graph_query(entity_name: str, depth: int = 2) -> List[Dict[str, Any]]:
-    """Traverse entity graph from a starting node.
+def graph_query(entity_name: str, depth: int = 2, max_results: int = 20) -> List[Dict[str, Any]]:
+    """Traverse entity graph from a starting node (BFS with limits).
+
+    Guards:
+    - visited set prevents cycles
+    - depth limit (default 2) prevents combinatorial explosion
+    - max_results cap (default 20) prevents oversized output
+    - co_occurrence edges deprioritized (traversed last)
 
     Returns chain of connected entities up to `depth` hops.
-    Example: "ouroboros" → uses → "mac studio" → runs → "ollama"
     """
     mem = get_memory()
     visited = set()
     results = []
 
+    # Pre-fetch all relations once (avoid N queries)
+    try:
+        collection = mem._get_collection("semantic")
+        all_rels = collection.get(
+            where={"is_relation": "true"},
+            include=["metadatas"],
+        )
+        relations_data = all_rels["metadatas"] if all_rels["metadatas"] else []
+    except Exception:
+        return []
+
     def _traverse(name: str, current_depth: int):
-        if current_depth > depth or name in visited:
+        if current_depth > depth or name in visited or len(results) >= max_results:
             return
         visited.add(name)
 
-        # Find all relations involving this entity
-        try:
-            collection = mem._get_collection("semantic")
-            search = collection.get(
-                where={"is_relation": "true"},
-                include=["documents", "metadatas"],
-            )
+        # Find matching relations, prioritize named relations over co_mentioned
+        matches = []
+        for meta in relations_data:
+            from_e = meta.get("from_entity", "")
+            to_e = meta.get("to_entity", "")
+            rel = meta.get("relation_type", "")
 
-            for doc, meta in zip(search["documents"], search["metadatas"]):
-                from_e = meta.get("from_entity", "")
-                to_e = meta.get("to_entity", "")
-                rel = meta.get("relation_type", "")
+            if name.lower() in from_e.lower():
+                matches.append((from_e, rel, to_e))
+            elif name.lower() in to_e.lower():
+                matches.append((to_e, rel, from_e))
 
-                if name.lower() in from_e.lower():
-                    results.append({"from": from_e, "relation": rel, "to": to_e, "depth": current_depth})
-                    _traverse(to_e, current_depth + 1)
-                elif name.lower() in to_e.lower():
-                    results.append({"from": from_e, "relation": rel, "to": to_e, "depth": current_depth})
-                    _traverse(from_e, current_depth + 1)
+        # Sort: named relations first, co_mentioned last
+        matches.sort(key=lambda x: (x[1] == "co_mentioned", x[0]))
 
-        except Exception:
-            pass
+        for from_e, rel, to_e in matches:
+            if len(results) >= max_results:
+                break
+            results.append({"from": from_e, "relation": rel, "to": to_e, "depth": current_depth})
+            _traverse(to_e, current_depth + 1)
 
     _traverse(entity_name, 0)
     return results
