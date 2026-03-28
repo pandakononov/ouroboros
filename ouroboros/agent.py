@@ -32,6 +32,7 @@ from ouroboros.tools.registry import ToolContext
 from ouroboros.memory import Memory
 from ouroboros.context import build_llm_messages
 from ouroboros.loop import run_llm_loop
+from ouroboros.reflection import ReflectionPipeline
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +440,25 @@ class OuroborosAgent:
             if not isinstance(text, str) or not text.strip():
                 text = "⚠️ Model returned an empty response. Try rephrasing your request."
 
+            # Apply reflection pipeline if text is substantial
+            if isinstance(text, str) and len(text.strip()) > 20:
+                try:
+                    reflector = ReflectionPipeline(llm=self.llm)
+                    reflection_result = reflector.run(text, task.get("chat_id"), task.get("id"))
+                    if reflection_result["revised_response"]:
+                        # Log reflection metrics
+                        append_jsonl(drive_logs / "events.jsonl", {
+                            "ts": utc_now_iso(),
+                            "type": "reflection_applied",
+                            "task_id": task.get("id"),
+                            "critique_summary": reflection_result["critique"]["summary"][:100] + "...",
+                            "revised": reflection_result["revision_applied"],
+                        })
+                        text = reflection_result["revised_response"]
+                except Exception as e:
+                    log.debug(f"Reflection pipeline failed: {e}", exc_info=True)
+                    # Continue with original text on error
+            
             # Emit events for supervisor
             self._emit_task_results(task, text, usage, llm_trace, start_time, drive_logs)
             return list(self._pending_events)
