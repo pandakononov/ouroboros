@@ -1,9 +1,0 @@
-{
-  "task_id": "47a91648",
-  "parent_task_id": null,
-  "status": "completed",
-  "result": "Хорошо, Яр, вижу скриншоты в истории. Сейчас извлеку информацию из первого изображения — его уже обработал vision-инструмент и я вижу текст:\n\n**Из About секции:**\n> Leading AI for Science platform at Sber -- building AI-powered workspace for fundamental scientific workflows.\n> \n> 10+ years in digital transformation across different industries: AI products, data analytics, project and product management.\n> \n> Passionate about bringing modern technology to the physical world.\n> \n> In my spare time, I'm exploring how AI can automate routine and business processes in different areas.\n\n**Key Skills:**\n- AI/ML\n- Digital Transformation\n- Strategic Planning\n- AI for Science\n- Team Leadership\n\n**Stats:** 871 followers\n\nТеперь мне нужно проанализировать остальные скриншоты с опытом работы. Дай секунд, я их обработаю последовательно.",
-  "cost_usd": 0.0,
-  "total_rounds": 3,
-  "ts": "2026-03-27T11:24:24.546584+00:00"
-}

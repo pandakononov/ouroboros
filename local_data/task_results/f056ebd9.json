@@ -1,9 +1,0 @@
-{
-  "task_id": "f056ebd9",
-  "parent_task_id": null,
-  "status": "completed",
-  "result": "Отлично! 🎉 Вижу `SUCCESS` — первый камень фундамента положен.\n\n**Что это значит:**\n- WebSocket связь работает: Mac Studio ↔ Mac Studio (позже будет ↔ ESP32)\n- Аудио данные передаются и принимаются корректно\n- Сервер готов принимать реальный трафик\n\n**Следующий шаг — теперь уже с пользой:**\n\nВместо эха нам нужно:\n1. **Audio → Text (STT)** — whisper.cpp на Python\n2. **Text → Text (LLM)** — я, через OpenRouter\n3. **Text → Audio (TTS)** — Kokoro или Piper\n\n**Мой план:**\n\nВ `echo_server.py` добавим три функции:\n```python\ndef stt(audio_bytes) -> str:           # Whisper.cpp\ndef llm(text) -> str:                  # Я (OpenRouter)\ndef tts(text) -> bytes:                # Kokoro/Piper\n```\n\nИ заменим эхо на пайплайн:\n```python\naudio = await ws.recv()\ntext = stt(audio)\nresponse_text = llm(text)\nresponse_audio = tts(response_text)\nawait ws.send(response_audio)\n```\n\n**Твой вопрос: с чего начинаем?**\n\nВариант А: **STT первым** — добавляем Whisper.cpp, тестируем \"audio → текст\"\nВариант Б: **TTS первым** — добавляем Kokoro/Piper, тестируем \"текст → audio\"\nВариант В: **Я (LLM) в середину** — но он требует auth token, проще подождать до финала\n\nЧто выбираем? 🤔",
-  "cost_usd": 0.0,
-  "total_rounds": 1,
-  "ts": "2026-03-27T15:52:19.231374+00:00"
-}

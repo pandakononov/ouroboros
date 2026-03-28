@@ -1,3 +1,0 @@
-6236b32 Update BIBLE.md
-31325fb add X (Twitter) badge to README
-4664b66 add link to desktop

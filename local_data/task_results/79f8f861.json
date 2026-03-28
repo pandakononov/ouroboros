@@ -1,9 +1,0 @@
-{
-  "task_id": "79f8f861",
-  "parent_task_id": null,
-  "status": "completed",
-  "result": "```\n--- модель скачана --- распаковываю --- ```",
-  "cost_usd": 0.0,
-  "total_rounds": 6,
-  "ts": "2026-03-27T18:33:26.727406+00:00"
-}
