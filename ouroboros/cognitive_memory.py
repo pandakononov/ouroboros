@@ -542,7 +542,7 @@ def extract_entities(text: str) -> List[Dict[str, str]]:
 
 
 def store_with_entities(text: str, store: str = "semantic") -> str:
-    """Store memory and extract entities as graph edges."""
+    """Store memory and extract entities + relations as graph edges."""
     mem = get_memory()
     entities = extract_entities(text)
 
@@ -553,7 +553,7 @@ def store_with_entities(text: str, store: str = "semantic") -> str:
 
     mem_id = mem.remember(text, store=store, metadata=metadata)
 
-    # Store each entity as a separate semantic memory for graph building
+    # Store each entity as a graph node
     for entity in entities:
         entity_text = f"[entity:{entity['type']}] {entity['name']}"
         mem.remember(
@@ -561,10 +561,125 @@ def store_with_entities(text: str, store: str = "semantic") -> str:
             store="semantic",
             metadata={"is_entity": "true", "entity_type": entity["type"]},
             source="entity_extraction",
-            dedup_threshold=0.98,  # Very strict dedup for entities
+            dedup_threshold=0.98,
         )
 
+    # Extract and store relations between entities
+    if len(entities) >= 2:
+        relations = extract_relations(text, entities)
+        for rel in relations:
+            rel_text = f"[relation] {rel['from']} --{rel['relation']}--> {rel['to']}"
+            mem.remember(
+                rel_text,
+                store="semantic",
+                metadata={
+                    "is_relation": "true",
+                    "from_entity": rel["from"],
+                    "to_entity": rel["to"],
+                    "relation_type": rel["relation"],
+                },
+                source="relation_extraction",
+                dedup_threshold=0.95,
+            )
+
     return mem_id
+
+
+def extract_relations(text: str, entities: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Extract relations between entities in text.
+
+    Returns list of {from, relation, to} dicts.
+    """
+    relations = []
+    lower = text.lower()
+    entity_names = [e["name"] for e in entities]
+
+    # Relation patterns
+    relation_patterns = [
+        (r"(\w+)\s+(?:использует|uses|работает с|runs on)\s+(\w+)", "uses"),
+        (r"(\w+)\s+(?:связан с|connected to|подключен к)\s+(\w+)", "connected_to"),
+        (r"(\w+)\s+(?:создал|wrote|написал|built)\s+(\w+)", "created"),
+        (r"(\w+)\s+(?:запущен на|running on|deployed on|живёт на)\s+(\w+)", "runs_on"),
+        (r"(\w+)\s+(?:часть|part of|входит в)\s+(\w+)", "part_of"),
+    ]
+
+    for pattern, rel_type in relation_patterns:
+        matches = re.finditer(pattern, lower)
+        for match in matches:
+            from_name = match.group(1)
+            to_name = match.group(2)
+            # Check if matched words are known entities
+            from_entity = next((e for e in entity_names if e in from_name or from_name in e), None)
+            to_entity = next((e for e in entity_names if e in to_name or to_name in e), None)
+            if from_entity and to_entity and from_entity != to_entity:
+                relations.append({"from": from_entity, "relation": rel_type, "to": to_entity})
+
+    # If no pattern matched but we have 2+ entities, infer co-occurrence
+    if not relations and len(entities) >= 2:
+        for i in range(len(entities)):
+            for j in range(i + 1, len(entities)):
+                relations.append({
+                    "from": entities[i]["name"],
+                    "relation": "co_mentioned",
+                    "to": entities[j]["name"],
+                })
+
+    return relations
+
+
+def graph_query(entity_name: str, depth: int = 2) -> List[Dict[str, Any]]:
+    """Traverse entity graph from a starting node.
+
+    Returns chain of connected entities up to `depth` hops.
+    Example: "ouroboros" → uses → "mac studio" → runs → "ollama"
+    """
+    mem = get_memory()
+    visited = set()
+    results = []
+
+    def _traverse(name: str, current_depth: int):
+        if current_depth > depth or name in visited:
+            return
+        visited.add(name)
+
+        # Find all relations involving this entity
+        try:
+            collection = mem._get_collection("semantic")
+            search = collection.get(
+                where={"is_relation": "true"},
+                include=["documents", "metadatas"],
+            )
+
+            for doc, meta in zip(search["documents"], search["metadatas"]):
+                from_e = meta.get("from_entity", "")
+                to_e = meta.get("to_entity", "")
+                rel = meta.get("relation_type", "")
+
+                if name.lower() in from_e.lower():
+                    results.append({"from": from_e, "relation": rel, "to": to_e, "depth": current_depth})
+                    _traverse(to_e, current_depth + 1)
+                elif name.lower() in to_e.lower():
+                    results.append({"from": from_e, "relation": rel, "to": to_e, "depth": current_depth})
+                    _traverse(from_e, current_depth + 1)
+
+        except Exception:
+            pass
+
+    _traverse(entity_name, 0)
+    return results
+
+
+def graph_text(entity_name: str, depth: int = 2) -> str:
+    """Get entity graph as readable text."""
+    chains = graph_query(entity_name, depth)
+    if not chains:
+        return f"(no graph connections for '{entity_name}')"
+
+    lines = [f"Graph for '{entity_name}':"]
+    for c in chains:
+        indent = "  " * c["depth"]
+        lines.append(f"{indent}{c['from']} --{c['relation']}--> {c['to']}")
+    return "\n".join(lines)
 
 
 def generate_reflection_prompt(context: str) -> str:

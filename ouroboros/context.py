@@ -140,14 +140,87 @@ def _build_memory_sections(memory: Memory) -> List[str]:
     return sections
 
 
+def _summarize_old_chat(memory: Memory, entries: list) -> str:
+    """LLM-summarize older chat messages to save context window.
+
+    Caches summary in dialogue_summary.md to avoid re-summarizing.
+    """
+    if not entries:
+        return ""
+
+    # Check cache
+    summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
+    cache_marker = f"<!-- entries:{len(entries)} -->"
+    if summary_path.exists():
+        cached = read_text(summary_path)
+        if cache_marker in cached:
+            return cached.split(cache_marker)[-1].strip()
+
+    # Build text to summarize
+    lines = []
+    for e in entries:
+        d = "→" if str(e.get("direction", "")).lower() in ("out", "outgoing") else "←"
+        text = str(e.get("text", ""))[:300]
+        lines.append(f"{d} {text}")
+    chat_text = "\n".join(lines)
+
+    if not chat_text.strip():
+        return ""
+
+    try:
+        from ouroboros.llm import LLMClient
+        light_model = os.environ.get("OUROBOROS_MODEL_LIGHT", "light")
+        client = LLMClient()
+        resp, _ = client.chat(
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Summarize this conversation in 5-10 bullet points. "
+                    "Keep key decisions, facts, and user preferences. "
+                    "Write in Russian. Be concise.\n\n" + chat_text[:8000]
+                ),
+            }],
+            model=light_model,
+            reasoning_effort="low",
+            max_tokens=800,
+        )
+        summary = (resp.get("content") or "").strip()
+        if summary:
+            # Cache it
+            pathlib.Path(summary_path).write_text(
+                f"{cache_marker}\n{summary}", encoding="utf-8"
+            )
+            return summary
+    except Exception:
+        pass
+
+    # Fallback: just take first/last lines
+    if len(lines) > 10:
+        return "\n".join(lines[:5] + ["..."] + lines[-5:])
+    return "\n".join(lines)
+
+
 def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[str]:
     """Build recent chat, recent progress, recent tools, recent events sections."""
     sections = []
 
-    chat_summary = memory.summarize_chat(
-        memory.read_jsonl_tail("chat.jsonl", 200))
-    if chat_summary:
-        sections.append("## Recent chat\n\n" + chat_summary)
+    # Sliding window chat: last 30 messages verbatim + LLM summary of older
+    all_chat = memory.read_jsonl_tail("chat.jsonl", 200)
+    recent_window = 30  # Keep last 30 verbatim
+    if len(all_chat) > recent_window:
+        older = all_chat[:-recent_window]
+        recent = all_chat[-recent_window:]
+        # Summarize older messages
+        older_summary = _summarize_old_chat(memory, older)
+        if older_summary:
+            sections.append("## Chat Summary (older)\n\n" + clip_text(older_summary, 3000))
+        recent_text = memory.summarize_chat(recent)
+        if recent_text:
+            sections.append("## Recent chat (last 30)\n\n" + recent_text)
+    else:
+        chat_summary = memory.summarize_chat(all_chat)
+        if chat_summary:
+            sections.append("## Recent chat\n\n" + chat_summary)
 
     progress_entries = memory.read_jsonl_tail("progress.jsonl", 200)
     if task_id:

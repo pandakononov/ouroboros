@@ -177,6 +177,26 @@ def get_tools() -> List[ToolEntry]:
             "parameters": {"type": "object", "properties": {}},
         }, _memory_stats),
 
+        ToolEntry("memory_graph", {
+            "name": "memory_graph",
+            "description": (
+                "Query the entity knowledge graph. Shows how entities are connected: "
+                "'ouroboros' → uses → 'mac studio' → runs → 'ollama'. "
+                "Use to understand relationships between people, tools, and projects."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity": {"type": "string", "description": "Entity name to start from"},
+                    "depth": {"type": "integer", "description": "How many hops to traverse (default 2)"},
+                },
+                "required": ["entity"],
+            },
+        }, lambda ctx, entity, depth=2: __import__('json').dumps(
+            {"graph": __import__('ouroboros.cognitive_memory', fromlist=['graph_text']).graph_text(entity, depth)},
+            ensure_ascii=False,
+        )),
+
         ToolEntry("memory_reflect", {
             "name": "memory_reflect",
             "description": (
