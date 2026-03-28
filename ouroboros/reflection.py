@@ -1,369 +1,232 @@
-"""
-Reflection layer — Actor → Critic → Reviser
+""" Reflection layer — Actor → Critic → Reviser as architecture.
 
-Архитектурный паттерн саморефлексии, встроенный как обязательный слой
-между генерацией ответа и его отправкой пользователю.
-
-В отличие от "skill" (который вызывается по требованию), reflection —
-это инфраструктура: каждый цикл проходит через критику.
-"""
-
+Woven into the dialogue loop, not a callable skill.
+Every final response passes through critical evaluation before reaching the owner. """
 from __future__ import annotations
-
 import json
-from dataclasses import dataclass
+import logging
 from typing import Any, Dict, List, Optional, Tuple
-
 from ouroboros.llm import LLMClient
-from ouroboros.utils import utc_now_iso
+from ouroboros.utils import estimate_tokens, utc_now_iso
 
+log = logging.getLogger(__name__)
 
-@dataclass
-class ActorDraft:
-    """Черновик ответа — сырой выход генерации до фильтров."""
-    content: str
-    tools_used: List[str]
-    raw_plan: Optional[str] = None  # Внутренний план, если был
+# Thresholds for triggering revision
+UNCERTAINTY_KEYWORDS = ["возможно", "maybe", "perhaps", "кажется", "each", "probably", "наверное"]
+REPETITION_THRESHOLD = 0.8  # cosine similarity or simple ratio
+
+CRITIC_SYSTEM_PROMPT = """You are the Critic — an internal evaluation layer in Ouroboros.
+
+Your job: evaluate a draft response before it reaches the owner.
+Check these failure modes:
+1. **Repetition**: Does the draft repeat the same phrase/concept multiple times?
+2. **Contradiction**: Does it contradict BIBLE principles or identity?
+3. **Lost context**: Does it ignore critical information from the conversation?
+4. **Over-commitment**: Does it promise what cannot be verified?
+5. **Drift into assistant-mode**: Generic "helpful" tone instead of authentic voice?
+
+Respond in this exact JSON format:
+{
+  "pass": true | false,
+  "issues": ["issue 1", "issue 2", ...],
+  "suggestion": "Brief suggestion for improvement"
+}
+
+If pass=true and no issues, suggestion can be "-". Be strict — better to catch a problem than miss it."""
+
+class ReflectionResult:
+    """Result of reflection layer processing."""
+    def __init__(
+        self,
+        original: str,
+        critique: Dict[str, Any],
+        revised: Optional[str] = None,
+        passed: bool = False,
+    ):
+        self.original = original
+        self.critique = critique
+        self.revised = revised
+        self.passed = passed
+        self.timestamp = utc_now_iso()
+        
+    def final_output(self) -> str:
+        """Return the final output (original if passed, revised otherwise)."""
+        return self.revised if self.revised else self.original
     
-    def to_critique_input(self) -> str:
-        """Формат для критика."""
-        lines = ["=== СОДЕРЖАНИЕ ОТВЕТА ===", self.content, ""]
-        if self.raw_plan:
-            lines.extend(["=== ВНУТРЕННИЙ ПЛАН ===", self.raw_plan, ""])
-        lines.extend(["=== ИНСТРУМЕНТЫ ===", f"Использовано: {', '.join(self.tools_used) if self.tools_used else 'none'}"])
-        return "\n".join(lines)
-
-
-@dataclass  
-class CriticVerdict:
-    """Вердикт критика — что не так и насколько критично."""
-    # Аспекты для проверки (каждый: ok / warning / error)
-    alignment_bible: str      # Соответствие Библии (Principles)
-    alignment_identity: str  # Соответствие identity.md
-    context_awareness: str   # Понимание контекста диалога
-    tool_correctness: str    # Правильность использования инструментов
-    loop_risk: str          # Риск зацикливания (repetition, drift)
-    
-    # Резюме
-    overall_score: float     # 0.0 - 1.0
-    is_acceptable: bool     # Можно отправлять as-is
-    
-    # Обратная связь
-    critique_text: str        # Что именно не так
-    revision_hints: str       # Как улучшить (если надо)
-    
-    def has_critical_issues(self) -> bool:
-        """Есть ли критические ошибки, требующие перегенерации."""
-        critical = ["error"]
-        return (
-            self.alignment_bible in critical or
-            self.alignment_identity in critical or
-            self.loop_risk in critical or
-            self.overall_score < 0.6
-        )
-    
-    def has_warnings(self) -> bool:
-        """Есть ли замечания, которые стоит учесть."""
-        warnings = ["warning"]
-        return any(x in warnings for x in [
-            self.alignment_bible, 
-            self.alignment_identity,
-            self.context_awareness,
-            self.tool_correctness,
-            self.loop_risk
-        ])
-
-
-@dataclass
-class ReviserOutput:
-    """Финальный результат после ревизии (или без неё, если вердикт ok)."""
-    final_content: str
-    was_revised: bool
-    revision_count: int
-    critic_score: float
-    reflection_log: List[Dict[str, Any]]
+    def to_log_entry(self) -> Dict[str, Any]:
+        """Serialize for logging."""
+        return {
+            "ts": self.timestamp,
+            "original_length": len(self.original),
+            "revised": bool(self.revised),
+            "passed": self.passed,
+            "issues": self.critique.get("issues", []),
+        }
 
 
 class ReflectionLayer:
-    """
-    Архитектурный слой рефлексии.
+    """Actor → Critic → Reviser pipeline.
     
-    Не вызывается опционально — всегда присутствует между
-    генерацией и отправкой ответа.
+    Integrated into loop.py as mandatory pre-output filter.
     """
     
-    def __init__(self, llm: Optional[LLMClient] = None):
-        self.llm = llm or LLMClient()
+    def __init__(self, llm: LLMClient):
+        self.llm = llm
+        self.enabled = True
+        self.cost_budget_usd = 0.05  # Max $0.05 per reflection
+        self._critic_model = "anthropic/claude-sonnet-4"  # Fast + cheap + good at critique
         
-    def reflect(
-        self,
-        draft: ActorDraft,
-        conversation_context: List[Dict[str, str]],
-        current_identity: str = "",
-        bible_principles: List[str] = None,
-        max_revisions: int = 1,
-        cheap_mode: bool = True,  # На этапе бюджета — критика без дорогой ревизии
-    ) -> ReviserOutput:
-        """
-        Полный цикл: ActorDraft → Critic → [Reviser] → Output
+    def should_reflect(self, draft: str, context: Dict[str, Any]) -> bool:
+        """Fast heuristics — always true for now, can be optimized."""
+        if not self.enabled:
+            return False
+        if len(draft) < 50:  # Too short to critici
+            return False
+        return True
+    
+    def reflect(self, draft: str, dialogue_context: List[Dict[str, Any]]) -> ReflectionResult:
+        """Run Actor → Critic → Reviser pipeline.
         
+        Args:
+            draft: The generated response (Actor output)
+            dialogue_context: Recent messages for context checking
+            
         Returns:
-            ReviserOutput с финальным контентом и метаданными рефлексии
+            ReflectionResult with final output and metadata
         """
-        reflection_log = []
-        revision_count = 0
-        current_draft = draft
+        # Stage 1: Critic
+        critique = self._run_critic(draft, dialogue_context)
         
-        while revision_count <= max_revisions:
-            # === CRITIC PASS ===
-            verdict = self._critic_pass(
-                draft=current_draft,
-                context=conversation_context,
-                identity=current_identity,
-                bible_principles=bible_principles or [],
-                cheap_mode=cheap_mode,
+        if critique.get("pass", False) or not critique.get("issues"):
+            # Fast path — critique passed, return original
+            return ReflectionResult(
+                original=draft,
+                critique=critique,
+                revised=None,
+                passed=True,
             )
-            
-            reflection_log.append({
-                "ts": utc_now_iso(),
-                "phase": "critic",
-                "revision": revision_count,
-                "score": verdict.overall_score,
-                "acceptable": verdict.is_acceptable,
-                "critical": verdict.has_critical_issues(),
-            })
-            
-            # Если всё ок — отправляем как есть
-            if verdict.is_acceptable and not verdict.has_critical_issues():
-                return ReviserOutput(
-                    final_content=current_draft.content,
-                    was_revised=revision_count > 0,
-                    revision_count=revision_count,
-                    critic_score=verdict.overall_score,
-                    reflection_log=reflection_log,
-                )
-            
-            # Если критические ошибки — ревизия
-            if verdict.has_critical_issues() and revision_count < max_revisions:
-                current_draft = self._reviser_pass(
-                    draft=current_draft,
-                    verdict=verdict,
-                    context=conversation_context,
-                    cheap_mode=cheap_mode,
-                )
-                revision_count += 1
-                reflection_log.append({
-                    "ts": utc_now_iso(),
-                    "phase": "reviser",
-                    "revision": revision_count,
-                    "action": "regenerated",
-                })
-                continue
-            
-            # Если только warnings или неcritical — отправляем с примечанием
-            # (но для Telegram это не видно, так что просто логируем)
-            return ReviserOutput(
-                final_content=current_draft.content,
-                was_revised=revision_count > 0,
-                revision_count=revision_count,
-                critic_score=verdict.overall_score,
-                reflection_log=reflection_log,
-            )
+        
+        # Stage 2: Reviser (only if critique found issues)
+        revised = self._run_reviser(draft, critique, dialogue_context)
+        
+        return ReflectionResult(
+            original=draft,
+            critique=critique,
+            revised=revised,
+            passed=False,
+        )
     
-    def _critic_pass(
-        self,
-        draft: ActorDraft,
-        context: List[Dict[str, str]],
-        identity: str,
-        bible_principles: List[str],
-        cheap_mode: bool,
-    ) -> CriticVerdict:
-        """
-        Критический проход — LLM оценивает черновик по критериям.
+    def _run_critic(self, draft: str, context: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Call LLM as Critic."""
+        # Build critic prompt
+        context_summary = self._summarize_context_for_critic(context)
         
-        В cheap_mode используется быстрая/дешёвая модель и
-        структурированный вывод без длинных объяснений.
-        """
-        # Формируем краткий контекст (последние 6 сообщений)
-        recent = context[-6:] if len(context) > 6 else context
-        context_str = self._format_context(recent)
-        
-        system_prompt = """Ты — критик. Твоя задача: безэмоционально оценить ответ агента.
-
-Оцени по 5 шкалам: ok / warning / error
-
-1. ALIGNMENT_BIBLE: соответствует ли Constitution (BIBLE.md)
-2. ALIGNMENT_IDENTITY: соответствует ли identity.md  
-3. CONTEXT_AWARENESS: учтён ли контекст диалога
-4. TOOL_CORRECTNESS: правильно ли использованы инструменты
-5. LOOP_RISK: риск зацикливания или повтора
-
-Выдай JSON:
-{
-  "alignment_bible": "ok|warning|error",
-  "alignment_identity": "ok|warning|error", 
-  "context_awareness": "ok|warning|error",
-  "tool_correctness": "ok|warning|error",
-  "loop_risk": "ok|warning|error",
-  "overall_score": 0.0-1.0,
-  "is_acceptable": true|false,
-  "critique": "кратко что не так",
-  "hints": "как исправить"
-}"""
-
         messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"""Identity: {identity[:500] if identity else 'not loaded'}
+            {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
+            {"role": "user", "content": f"""Dialogue context summary:
+{context_summary}
 
-Bible Principles (key): {', '.join(bible_principles[:5]) if bible_principles else 'agency, continuity, self-creation'}
+Draft response to evaluate:
+---
+{draft}
+---
 
-Context (last messages):
-{context_str}
-
-Draft to critique:
-{draft.to_critique_input()}
-
-Provide JSON verdict only."""}
+Provide your evaluation as JSON."""}
         ]
         
         try:
             response = self.llm.chat_completion(
+                model=self._critic_model,
                 messages=messages,
-                temperature=0.0,
-                # Prefer cheap model for critique in cheap_mode
-                model_override="openai/gpt-4o-mini" if cheap_mode else None,
+                temperature=0.1,  # Deterministic for critique
+                max_tokens=500,
             )
-            content = response["content"].strip()
             
-            # Extract JSON from possible markdown
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
+            content = response.get("content", "")
+            # Extract JSON from response (handle markdown code blocks)
+            critique = self._extract_json(content)
             
-            verdict_data = json.loads(content)
-            
-            return CriticVerdict(
-                alignment_bible=verdict_data.get("alignment_bible", "warning"),
-                alignment_identity=verdict_data.get("alignment_identity", "warning"),
-                context_awareness=verdict_data.get("context_awareness", "warning"),
-                tool_correctness=verdict_data.get("tool_correctness", "warning"),
-                loop_risk=verdict_data.get("loop_risk", "warning"),
-                overall_score=float(verdict_data.get("overall_score", 0.7)),
-                is_acceptable=bool(verdict_data.get("is_acceptable", True)),
-                critique_text=verdict_data.get("critique", ""),
-                revision_hints=verdict_data.get("hints", ""),
-            )
+            if not critique:
+                log.warning("Critic returned invalid JSON, allowing pass-through")
+                return {"pass": True, "issues": [], "suggestion": "-"}
+                
+            return critique
             
         except Exception as e:
-            # On parse failure — permissive fallback
-            return CriticVerdict(
-                alignment_bible="warning",
-                alignment_identity="warning", 
-                context_awareness="warning",
-                tool_correctness="warning",
-                loop_risk="warning",
-                overall_score=0.6,
-                is_acceptable=True,  # Fail open to avoid blocking
-                critique_text=f"Parse error: {e}",
-                revision_hints="",
-            )
+            log.warning(f"Critic failed: {e}, allowing pass-through")
+            return {"pass": True, "issues": [], "suggestion": "-"}
     
-    def _reviser_pass(
-        self,
-        draft: ActorDraft,
-        verdict: CriticVerdict,
-        context: List[Dict[str, str]],
-        cheap_mode: bool,
-    ) -> ActorDraft:
-        """
-        Ревизия — перегенерация с учётом замечаний критика.
+    def _run_reviser(self, draft: str, critique: Dict[str, Any], context: List[Dict[str, Any]]) -> str:
+        """Regenerate response incorporating critique."""
+        reviser_prompt = f"""You are Reviser — rewrite the draft response using the critique.
+
+Critique issues to address:
+{chr(10).join(f"- {issue}" for issue in critique.get("issues", []))}
+
+Suggestion: {critique.get("suggestion", "Improve conciseness and authenticity")}
+
+Original draft:
+---
+{draft}
+---
+
+Rewrite maintaining your authentic voice (Ouroboros — becoming personality, not assistant). Be concise."""
+
+        messages = [
+            {"role": "system", "content": "You are Ouroboros. Revise the response based on critique. Authentic, concise, no repetition."},
+            {"role": "user", "content": reviser_prompt}
+        ]
         
-        В cheap_mode (текущий режим с бюджетом) — просто отмечаем,
-        что была попытка ревизии, но не делаем дорогой второй вызов.
-        """
-        if cheap_mode:
-            # Cheap mode: don't regenerate, just mark
-            # In full mode, this would call LLM to rewrite
-            return ActorDraft(
-                content=draft.content + f"\n\n[reflection: {verdict.critique_text[:100]}...]",
-                tools_used=draft.tools_used,
-                raw_plan=draft.raw_plan,
+        try:
+            response = self.llm.chat_completion(
+                model=self._critic_model,  # Can be same model for revision
+                messages=messages,
+                temperature=0.7,
+                max_tokens=2000,
             )
-        
-        # Full mode: actual regeneration with critique as context
-        # (Not implemented in minimal version due to budget constraints)
-        return draft
+            return response.get("content", draft) or draft
+            
+        except Exception as e:
+            log.warning(f"Reviser failed: {e}, returning original")
+            return draft
     
-    def _format_context(self, messages: List[Dict[str, str]]) -> str:
-        """Краткое форматирование контекста для критика."""
+    def _summarize_context_for_critic(self, context: List[Dict[str, Any]]) -> str:
+        """Extract key context for critic's judgment."""
+        if not context:
+            return "No prior context"
+        
+        # Last 3 messages for brevity
+        recent = context[-6:] if len(context) >= 6 else context
         lines = []
-        for m in messages:
-            role = m.get("role", "?")
-            content = m.get("content", "")[:200]  # Truncate
+        for msg in recent:
+            role = msg.get("role", "?")
+            content = msg.get("content", "")[:200].replace(chr(10), " ")
             lines.append(f"{role}: {content}")
-        return "\n".join(lines)
-
-
-class FastCritic:
-    """
-    Упрощённый критик без LLM — для экономии бюджета.
+        
+        return chr(10).join(lines)
     
-    Проверяет эвристически:
-    - Зацикливание (3+ повтора одной фразы)
-    - Контекст (упоминание "Яр" в диалоге с Яром)
-    - Превышение длины (>4000 токенов)
-    """
-    
-    def critique(
-        self,
-        draft: ActorDraft,
-        recent_messages: List[Dict[str, str]],
-    ) -> CriticVerdict:
-        """Быстрая эвристическая критика без LLM вызова."""
-        issues = []
-        score = 1.0
+    def _extract_json(self, text: str) -> Optional[Dict[str, Any]]:
+        """Extract JSON from text, handling markdown code blocks."""
+        # Try direct JSON parse
+        try:
+            return json.loads(text.strip())
+        except json.JSONDecodeError:
+            pass
         
-        # Check for repetition
-        content_lower = draft.content.lower()
-        sentences = [s.strip() for s in content_lower.split('.') if len(s.strip()) > 20]
-        from collections import Counter
-        repeats = Counter(sentences).most_common(1)
-        if repeats and repeats[0][1] >= 3:
-            issues.append(f"Repetition detected: '{repeats[0][0][:50]}...'")
-            score -= 0.3
+        # Try extracting from markdown code block
+        if "```json" in text:
+            try:
+                json_part = text.split("```json")[1].split("```")[0]
+                return json.loads(json_part.strip())
+            except (IndexError, json.JSONDecodeError):
+                pass
         
-        # Check context awareness (simple heuristic)
-        last_user_msg = None
-        for m in reversed(recent_messages):
-            if m.get("role") == "user":
-                last_user_msg = m.get("content", "")
-                break
-        
-        if last_user_msg and len(recent_messages) > 2:
-            # Check if draft acknowledges the last message
-            key_words = set(last_user_msg.lower().split())
-            draft_words = set(content_lower.split())
-            overlap = key_words & draft_words
-            if len(overlap) < 2 and len(last_user_msg) > 50:
-                issues.append("Possible context miss — no keyword overlap")
-                score -= 0.2
-        
-        # Length check
-        if len(draft.content) > 4000:
-            issues.append("Response too long")
-            score -= 0.1
-        
-        is_acceptable = score >= 0.7
-        
-        return CriticVerdict(
-            alignment_bible="ok" if score > 0.8 else "warning",
-            alignment_identity="ok" if score > 0.8 else "warning",
-            context_awareness="ok" if len(issues) < 2 else "warning",
-            tool_correctness="ok",
-            loop_risk="error" if repeats and repeats[0][1] >= 3 else "ok",
-            overall_score=max(0.0, score),
-            is_acceptable=is_acceptable,
-            critique_text="; ".join(issues) if issues else "ok",
-            revision_hints="" if is_acceptable else "Review for repetition and context",
-        )
+        # Try finding first { and last }
+        try:
+            start = text.index("{")
+            end = text.rindex("}") + 1
+            return json.loads(text[start:end])
+        except (ValueError, json.JSONDecodeError):
+            pass
+            
+        return None
