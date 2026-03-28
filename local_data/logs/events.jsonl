@@ -1754,3 +1754,4 @@
 {"ts": "2026-03-28T09:34:13.608547+00:00", "type": "worker_boot", "pid": 85960, "git_branch": "ouroboros", "git_sha": "1a2bd5cbc04b523754824151f737dcd9ea0ff88e"}
 {"ts": "2026-03-28T09:36:06.248148+00:00", "type": "worker_boot", "pid": 86996, "git_branch": "ouroboros", "git_sha": "728c11dc7f52242a97a9caba4c63779dd2304c82"}
 {"ts": "2026-03-28T09:36:06.248577+00:00", "type": "restart_verify", "pid": 86996, "ok": true, "expected_sha": "728c11dc7f52242a97a9caba4c63779dd2304c82", "observed_sha": "728c11dc7f52242a97a9caba4c63779dd2304c82"}
+{"ts": "2026-03-28T09:36:58.248651+00:00", "type": "worker_boot", "pid": 87227, "git_branch": "ouroboros", "git_sha": "547c0c2e2b127f2789e5a85391f43616f6e75ebb"}
