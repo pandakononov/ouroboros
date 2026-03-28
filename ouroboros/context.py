@@ -94,14 +94,41 @@ def _build_runtime_section(env: Any, task: Dict[str, Any]) -> str:
 
 
 def _build_memory_sections(memory: Memory) -> List[str]:
-    """Build scratchpad, identity, dialogue summary sections."""
+    """Build scratchpad, identity, core memory, soul, dialogue summary sections."""
     sections = []
+
+    # Core Memory (MEMORY.md) — always in context, ~3K tokens
+    core_memory_path = memory.drive_root / "memory" / "MEMORY.md"
+    if core_memory_path.exists():
+        core_text = read_text(core_memory_path)
+        if core_text.strip():
+            sections.append("## Core Memory\n\n" + clip_text(core_text, 4000))
+
+    # Soul (SOUL.md) — values, principles, boundaries
+    soul_path = memory.drive_root / "memory" / "SOUL.md"
+    if soul_path.exists():
+        soul_text = read_text(soul_path)
+        if soul_text.strip():
+            sections.append("## Soul\n\n" + clip_text(soul_text, 3000))
 
     scratchpad_raw = memory.load_scratchpad()
     sections.append("## Scratchpad\n\n" + clip_text(scratchpad_raw, 90000))
 
     identity_raw = memory.load_identity()
     sections.append("## Identity\n\n" + clip_text(identity_raw, 80000))
+
+    # Vector memory recall — retrieve relevant memories for current context
+    try:
+        from ouroboros.vector_memory import get_memory as _get_vmem
+        vmem = _get_vmem()
+        # Use scratchpad + identity as query for relevant memories
+        query = (scratchpad_raw or "")[:500] + " " + (identity_raw or "")[:500]
+        if query.strip():
+            recall_text = vmem.recall_text(query, top_k=5, min_score=0.4)
+            if recall_text and "(no relevant memories" not in recall_text:
+                sections.append("## Recalled Memories\n\n" + clip_text(recall_text, 5000))
+    except Exception:
+        pass  # Vector memory not available — skip silently
 
     # Dialogue summary (key moments from chat history)
     summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
