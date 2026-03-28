@@ -62,6 +62,39 @@ def _memory_stats(ctx: ToolContext) -> str:
     return json.dumps(mem.stats(), indent=2)
 
 
+def _memory_reflect(ctx: ToolContext) -> str:
+    """Run a reflection cycle — consolidate and examine memories."""
+    from ouroboros.cognitive_memory import build_reflection_context, run_decay_sweep
+
+    # Run decay sweep first
+    decay_stats = run_decay_sweep()
+
+    # Build reflection context
+    context = build_reflection_context()
+
+    return json.dumps({
+        "status": "reflection_ready",
+        "decay_sweep": decay_stats,
+        "context_preview": context[:2000] + "...",
+        "instruction": "Use this context to write an internal monologue reflection. "
+                       "Be genuine, not performative. Write in Russian.",
+    }, ensure_ascii=False, indent=2)
+
+
+def _memory_auto_capture(ctx: ToolContext, text: str, direction: str = "in") -> str:
+    """Auto-capture important information from a message."""
+    from ouroboros.cognitive_memory import auto_capture, classify_memory
+
+    classification = classify_memory(text)
+    mem_id = auto_capture(text, direction=direction)
+
+    return json.dumps({
+        "captured": mem_id is not None,
+        "id": mem_id,
+        "classification": classification,
+    }, ensure_ascii=False)
+
+
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("memory_store", {
@@ -128,4 +161,14 @@ def get_tools() -> List[ToolEntry]:
             "description": "Get memory statistics — count of memories per store.",
             "parameters": {"type": "object", "properties": {}},
         }, _memory_stats),
+
+        ToolEntry("memory_reflect", {
+            "name": "memory_reflect",
+            "description": (
+                "Run a reflection cycle: decay sweep + build reflection context. "
+                "Use when user says 'reflect', 'consolidate', or at end of day. "
+                "Returns context for writing an internal monologue."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        }, _memory_reflect),
     ]

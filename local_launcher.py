@@ -535,6 +535,13 @@ while True:
         _last_message_ts = time.time()
         save_state(st)
 
+        # Auto-capture important messages to vector memory
+        try:
+            from ouroboros.cognitive_memory import auto_capture
+            auto_capture(text, direction="in", timestamp=now_iso)
+        except Exception:
+            pass
+
         if text.strip().lower().startswith("/"):
             try:
                 result = _handle_supervisor_command(text, chat_id, tg_offset=offset)
