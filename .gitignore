@@ -26,3 +26,9 @@ Thumbs.db
 # Release artifacts (not tracked)
 .create_release.py
 .release_notes.md
+
+# Local runtime
+local_data/
+models/
+.venv/
+
