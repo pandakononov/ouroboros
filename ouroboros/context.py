@@ -117,16 +117,22 @@ def _build_memory_sections(memory: Memory) -> List[str]:
     identity_raw = memory.load_identity()
     sections.append("## Identity\n\n" + clip_text(identity_raw, 80000))
 
-    # Vector memory recall — retrieve relevant memories for current context
+    # Vector memory recall — retrieve relevant memories
+    # Uses contextual_recall if available (recalls by current message),
+    # falls back to scratchpad-based recall
     try:
-        from ouroboros.vector_memory import get_memory as _get_vmem
-        vmem = _get_vmem()
-        # Use scratchpad + identity as query for relevant memories
-        query = (scratchpad_raw or "")[:500] + " " + (identity_raw or "")[:500]
-        if query.strip():
-            recall_text = vmem.recall_text(query, top_k=5, min_score=0.4)
-            if recall_text and "(no relevant memories" not in recall_text:
-                sections.append("## Recalled Memories\n\n" + clip_text(recall_text, 5000))
+        from ouroboros.cognitive_memory import contextual_recall as _ctx_recall
+        # _last_user_message is injected by the caller if available
+        last_msg = getattr(memory, '_last_user_message', '') or ''
+        if last_msg:
+            recall_text = _ctx_recall(last_msg, top_k=5)
+        else:
+            from ouroboros.vector_memory import get_memory as _get_vmem
+            vmem = _get_vmem()
+            query = (scratchpad_raw or "")[:500] + " " + (identity_raw or "")[:500]
+            recall_text = vmem.recall_text(query, top_k=5, min_score=0.4) if query.strip() else ""
+        if recall_text and "(no relevant memories" not in recall_text:
+            sections.append("## Recalled Memories\n\n" + clip_text(recall_text, 5000))
     except Exception:
         pass  # Vector memory not available — skip silently
 

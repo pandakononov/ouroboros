@@ -143,6 +143,12 @@ class BackgroundConsciousness:
                 self._next_wakeup_sec = 3600  # Sleep long if over budget
                 continue
 
+            # Periodic memory maintenance (every ~6 hours)
+            try:
+                self._maybe_memory_maintenance()
+            except Exception:
+                pass
+
             try:
                 self._think()
             except Exception as e:
@@ -167,6 +173,44 @@ class BackgroundConsciousness:
         except Exception:
             log.warning("Failed to check background consciousness budget", exc_info=True)
             return True
+
+    # -------------------------------------------------------------------
+    # Memory maintenance (runs periodically in background)
+    # -------------------------------------------------------------------
+
+    _last_maintenance_ts: float = 0.0
+    _MAINTENANCE_INTERVAL_SEC: float = 6 * 3600  # Every 6 hours
+
+    def _maybe_memory_maintenance(self) -> None:
+        """Run periodic memory maintenance: decay sweep, promotion, MEMORY.md update."""
+        import time as _time
+        now = _time.time()
+        if now - self._last_maintenance_ts < self._MAINTENANCE_INTERVAL_SEC:
+            return
+
+        self._last_maintenance_ts = now
+
+        try:
+            from ouroboros.cognitive_memory import (
+                run_decay_sweep, promote_recurring_episodes, update_core_memory,
+            )
+
+            decay_stats = run_decay_sweep()
+            promoted = promote_recurring_episodes()
+            update_core_memory()
+
+            from ouroboros.utils import utc_now_iso
+            from supervisor.state import append_jsonl
+            append_jsonl(self._drive_root / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "memory_maintenance",
+                "decay": decay_stats,
+                "promoted": len(promoted),
+            })
+
+            log.info(f"[consciousness] memory maintenance: decay={decay_stats}, promoted={len(promoted)}")
+        except Exception as e:
+            log.warning(f"[consciousness] memory maintenance failed: {e}")
 
     # -------------------------------------------------------------------
     # Think cycle

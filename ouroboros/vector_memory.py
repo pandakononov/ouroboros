@@ -110,8 +110,12 @@ class VectorMemory:
         store: str = "semantic",
         metadata: Optional[Dict[str, Any]] = None,
         source: str = "agent",
+        dedup_threshold: float = 0.95,
     ) -> str:
-        """Store a memory in the specified store.
+        """Store a memory in the specified store with semantic dedup.
+
+        If a memory with >dedup_threshold similarity exists, updates it
+        instead of creating a duplicate.
 
         Returns the memory ID.
         """
@@ -119,8 +123,44 @@ class VectorMemory:
             store = "semantic"
 
         collection = self._get_collection(store)
-        mem_id = self._make_id(text, store)
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        embeddings = self._embed([text])
+
+        # Semantic dedup: check if near-duplicate exists
+        if collection.count() > 0 and dedup_threshold < 1.0:
+            try:
+                search = collection.query(
+                    query_embeddings=embeddings,
+                    n_results=1,
+                    include=["documents", "metadatas", "distances"],
+                )
+                if search["distances"][0]:
+                    distance = search["distances"][0][0]
+                    similarity = 1.0 - (distance / 2.0)
+                    if similarity >= dedup_threshold:
+                        # Update existing memory instead of creating duplicate
+                        existing_id = search["ids"][0][0]
+                        existing_meta = search["metadatas"][0][0]
+                        existing_meta["last_accessed"] = now
+                        existing_meta["access_count"] = str(int(existing_meta.get("access_count", 1)) + 1)
+                        # Merge text if substantially different
+                        existing_doc = search["documents"][0][0]
+                        if len(text) > len(existing_doc) * 1.2:
+                            # New text is significantly longer — replace
+                            collection.update(
+                                ids=[existing_id],
+                                documents=[text],
+                                embeddings=embeddings,
+                                metadatas=[existing_meta],
+                            )
+                        else:
+                            collection.update(ids=[existing_id], metadatas=[existing_meta])
+                        log.info(f"[memory] dedup: updated existing {existing_id} (sim={similarity:.2f})")
+                        return existing_id
+            except Exception:
+                pass  # Dedup failed, proceed with new entry
+
+        mem_id = self._make_id(text, store)
 
         meta = {
             "store": store,
@@ -132,8 +172,6 @@ class VectorMemory:
         }
         if metadata:
             meta.update({k: str(v) for k, v in metadata.items()})
-
-        embeddings = self._embed([text])
 
         collection.upsert(
             ids=[mem_id],

@@ -67,23 +67,28 @@ def _memory_reflect(ctx: ToolContext) -> str:
     from ouroboros.cognitive_memory import (
         build_reflection_context, run_decay_sweep,
         update_core_memory, vault_eviction_check,
+        promote_recurring_episodes,
     )
 
     # 1. Run decay sweep
     decay_stats = run_decay_sweep()
 
-    # 2. Check vault size
+    # 2. Promote recurring episodic themes to semantic
+    promoted = promote_recurring_episodes()
+
+    # 3. Check vault size
     vault_evictions = vault_eviction_check()
 
-    # 3. Update MEMORY.md from ChromaDB state
+    # 4. Update MEMORY.md from ChromaDB state
     update_core_memory()
 
-    # 4. Build reflection context
+    # 5. Build reflection context
     context = build_reflection_context()
 
     return json.dumps({
         "status": "reflection_ready",
         "decay_sweep": decay_stats,
+        "promoted_to_semantic": len(promoted),
         "vault_eviction_candidates": len(vault_evictions),
         "context_preview": context[:2000] + "...",
         "instruction": "Use this context to write an internal monologue reflection. "

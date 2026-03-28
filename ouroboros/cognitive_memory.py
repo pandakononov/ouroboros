@@ -380,6 +380,154 @@ def build_reflection_context(max_tokens: int = 30000) -> str:
     return "\n\n".join(sections)
 
 
+# ── Contextual recall ─────────────────────────────────────────────────
+
+def contextual_recall(message_text: str, top_k: int = 5) -> str:
+    """Recall memories relevant to the current incoming message.
+
+    Called on every message to inject relevant context.
+    Uses hybrid scoring (semantic × freshness).
+    """
+    if not message_text or len(message_text) < 10:
+        return ""
+
+    mem = get_memory()
+    return mem.recall_text(message_text, top_k=top_k, min_score=0.35)
+
+
+# ── Episodic → Semantic promotion ────────────────────────────────────
+
+PROMOTION_THRESHOLD = 3  # If a topic appears 3+ times in episodes, promote to semantic
+
+def promote_recurring_episodes() -> List[str]:
+    """Find recurring themes in episodic memory and promote to semantic.
+
+    Clusters similar episodic memories; if a cluster has 3+ entries,
+    extract the core fact and store in semantic.
+
+    Returns list of promoted memory IDs.
+    """
+    mem = get_memory()
+    promoted = []
+
+    try:
+        episodic = mem._get_collection("episodic")
+        semantic = mem._get_collection("semantic")
+        if episodic.count() < PROMOTION_THRESHOLD:
+            return []
+
+        # Get all episodic memories
+        all_eps = episodic.get(include=["documents", "embeddings", "metadatas"])
+        if not all_eps["embeddings"]:
+            return []
+
+        # Simple clustering: for each memory, count how many are similar
+        n = len(all_eps["documents"])
+        promoted_texts = set()
+
+        for i in range(n):
+            if all_eps["documents"][i] in promoted_texts:
+                continue
+
+            # Find similar episodes
+            similar = episodic.query(
+                query_embeddings=[all_eps["embeddings"][i]],
+                n_results=min(10, n),
+                include=["documents", "distances"],
+            )
+
+            cluster = []
+            for j, dist in enumerate(similar["distances"][0]):
+                sim = 1.0 - (dist / 2.0)
+                if sim > 0.75:
+                    cluster.append(similar["documents"][0][j])
+
+            if len(cluster) >= PROMOTION_THRESHOLD:
+                # Extract common theme — use shortest entry as the "fact"
+                fact = min(cluster, key=len)
+                # Strip timestamp prefix
+                clean_fact = fact.split("] ", 1)[-1] if "] " in fact else fact
+
+                # Check if already in semantic
+                existing = semantic.query(
+                    query_embeddings=[all_eps["embeddings"][i]],
+                    n_results=1,
+                    include=["distances"],
+                )
+                if existing["distances"][0] and (1.0 - existing["distances"][0][0] / 2.0) > 0.9:
+                    continue  # Already exists in semantic
+
+                mem_id = mem.remember(
+                    f"[promoted from {len(cluster)} episodes] {clean_fact}",
+                    store="semantic",
+                    metadata={"promoted": "true", "cluster_size": str(len(cluster))},
+                    source="episodic_promotion",
+                )
+                promoted.append(mem_id)
+                promoted_texts.add(all_eps["documents"][i])
+                log.info(f"[cognitive] promoted to semantic: {clean_fact[:80]}... (cluster={len(cluster)})")
+
+    except Exception as e:
+        log.warning(f"[cognitive] promotion failed: {e}")
+
+    return promoted
+
+
+# ── Knowledge graph (entity extraction) ──────────────────────────────
+
+def extract_entities(text: str) -> List[Dict[str, str]]:
+    """Simple entity extraction from text using patterns.
+
+    Returns list of {name, type} dicts.
+    Types: person, project, tool, concept, place.
+    """
+    entities = []
+    lower = text.lower()
+
+    # Known entities (hardcoded for now, could be learned)
+    known = {
+        "яр": "person", "yar": "person", "оро": "person", "ouroboros": "person",
+        "mac studio": "hardware", "dgx spark": "hardware", "esp32": "hardware",
+        "python": "tool", "chromadb": "tool", "ollama": "tool", "lightpanda": "tool",
+        "telegram": "tool", "github": "tool", "docker": "tool",
+        "openclaw": "project", "ouroboros": "project", "hema rag": "project",
+        "vosk": "tool", "whisper": "tool", "gemini": "tool", "kimi": "tool",
+        "стоицизм": "concept", "рефлексия": "concept",
+    }
+
+    for name, etype in known.items():
+        if name in lower:
+            entities.append({"name": name, "type": etype})
+
+    return entities
+
+
+def store_with_entities(text: str, store: str = "semantic") -> str:
+    """Store memory and extract entities as graph edges."""
+    mem = get_memory()
+    entities = extract_entities(text)
+
+    # Store the memory itself
+    metadata = {}
+    if entities:
+        metadata["entities"] = json.dumps(entities, ensure_ascii=False)
+
+    mem_id = mem.remember(text, store=store, metadata=metadata)
+
+    # Store each entity as a separate semantic memory for graph building
+    for entity in entities:
+        entity_text = f"[entity:{entity['type']}] {entity['name']}"
+        mem.remember(
+            entity_text,
+            store="semantic",
+            metadata={"is_entity": "true", "entity_type": entity["type"]},
+            source="entity_extraction",
+            dedup_threshold=0.98,  # Very strict dedup for entities
+        )
+
+    return mem_id
+
+
 def generate_reflection_prompt(context: str) -> str:
     """Generate reflection prompt for the LLM."""
     return f"""You are performing a self-reflection cycle. Review your memory state and write an internal monologue.
