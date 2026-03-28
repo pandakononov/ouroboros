@@ -150,7 +150,8 @@ async def chat_completions(request: Request):
 
         try:
             log.info(f"[{requested_model}] trying {provider_name}/{target_model} ({i+1}/{len(chain)})")
-            async with httpx.AsyncClient(timeout=300) as client:
+            _timeout = 60 if provider_name == "gemini" else 120
+            async with httpx.AsyncClient(timeout=_timeout) as client:
                 resp = await client.post(target_url, json=forward_body, headers=headers)
 
             if resp.status_code == 200:
