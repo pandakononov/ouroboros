@@ -5752,3 +5752,7 @@
 {"ts": "2026-03-28T09:33:15.276987+00:00", "type": "worker_spawn_start", "start_method": "spawn", "count": 0}
 {"ts": "2026-03-28T09:33:15.277775+00:00", "type": "launcher_start", "branch": "ouroboros", "sha": "760dc375823b1e618c2454d076f697daa63971b6", "max_workers": 0, "model_default": "dialog", "model_code": "coder", "model_light": "light", "soft_timeout_sec": 600, "hard_timeout_sec": 1800, "worker_start_method": "spawn", "diag_heartbeat_sec": 30, "diag_slow_cycle_sec": 20}
 {"ts": "2026-03-28T09:33:17.827114+00:00", "type": "worker_sha_verify", "ok": true, "expected_sha": "760dc375823b1e618c2454d076f697daa63971b6", "observed_sha": "760dc375823b1e618c2454d076f697daa63971b6", "worker_pid": 85960}
+{"ts": "2026-03-28T09:33:26.300552+00:00", "type": "deps_sync_ok", "reason": "bootstrap", "source": "requirements:/Users/ai_home/ouroboros/requirements.txt"}
+{"ts": "2026-03-28T09:33:26.374706+00:00", "type": "worker_spawn_start", "start_method": "spawn", "count": 0}
+{"ts": "2026-03-28T09:33:26.375528+00:00", "type": "launcher_start", "branch": "ouroboros", "sha": "6708aea08b02e56339bba1c6806d975847e9eea8", "max_workers": 0, "model_default": "dialog", "model_code": "coder", "model_light": "light", "soft_timeout_sec": 600, "hard_timeout_sec": 1800, "worker_start_method": "spawn", "diag_heartbeat_sec": 30, "diag_slow_cycle_sec": 20}
+{"ts": "2026-03-28T09:33:28.927756+00:00", "type": "worker_sha_verify", "ok": true, "expected_sha": "6708aea08b02e56339bba1c6806d975847e9eea8", "observed_sha": "6708aea08b02e56339bba1c6806d975847e9eea8", "worker_pid": 85960}
