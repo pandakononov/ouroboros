@@ -1,0 +1,3 @@
+72c2520 fix: use python3 instead of python for Mac compatibility
+cdb93fa feat: add WebSocket echo server with test client for voice relay prototype
+2a829aa feat: minimal WebSocket echo server for voice interface

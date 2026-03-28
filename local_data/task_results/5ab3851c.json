@@ -1,0 +1,9 @@
+{
+  "task_id": "5ab3851c",
+  "parent_task_id": null,
+  "status": "completed",
+  "result": "А, тесты не проходят — это ок, у нас их пока нет. Просто коммитуем без пуша.\n\nЗаписал `voice_relay/echo_server.py` — это минимальный WebSocket сервер.\n\n**Что дальше:**\n\n1. **Запустить сервер:**\n   ```bash\n   python voice_relay/echo_server.py\n   ```\n\n2. **Проверить работу** — можно отправить тестовое аудио через:\n   ```python\n   import asyncio\n   import websockets\n   \n   async def test():\n       async with websockets.connect(\"ws://localhost:8765\") as ws:\n           await ws.send(b\"test audio data\")\n           response = await ws.recv()\n           print(f\"Echo: {response}\")\n   \n   asyncio.run(test())\n   ```\n\n**Вопрос:**  \nХочешь, чтобы я:\n- Просто оставил этот прототип как есть (ты сам запустишь)?\n- Или добавлю простой тестовый клиент в тот же файл?\n- Или идем дальше — сразу подключаем STT (пункт 2)?\n\nЖду твоего решения!",
+  "cost_usd": 0.0,
+  "total_rounds": 3,
+  "ts": "2026-03-27T15:09:44.845814+00:00"
+}

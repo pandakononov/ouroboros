@@ -1,0 +1,9 @@
+{
+  "task_id": "745ba4f0",
+  "parent_task_id": null,
+  "status": "completed",
+  "result": "✅ Background consciousness is already running.  \nIf you’d like to pause it later, you can use `/bg stop`. Let me know if there’s anything else you’d like to explore while it’s active.",
+  "cost_usd": 0.0,
+  "total_rounds": 1,
+  "ts": "2026-03-27T10:54:40.201854+00:00"
+}

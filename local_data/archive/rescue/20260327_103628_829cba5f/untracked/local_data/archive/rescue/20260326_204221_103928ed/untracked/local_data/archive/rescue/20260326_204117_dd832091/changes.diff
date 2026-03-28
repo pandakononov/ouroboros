@@ -1,0 +1,26 @@
+diff --git a/ouroboros/apply_patch.py b/ouroboros/apply_patch.py
+index 066fd49..ac815c6 100644
+--- a/ouroboros/apply_patch.py
++++ b/ouroboros/apply_patch.py
+@@ -7,7 +7,7 @@ Supports: *** Update File, *** Add File, *** Delete File, *** End of File.
+ import pathlib
+ 
+ 
+-APPLY_PATCH_PATH = pathlib.Path("/usr/local/bin/apply_patch")
++APPLY_PATCH_PATH = pathlib.Path.home() / ".local" / "bin" / "apply_patch"
+ APPLY_PATCH_CODE = r"""#!/usr/bin/env python3
+ import os
+ import sys
+diff --git a/supervisor/git_ops.py b/supervisor/git_ops.py
+index 04a0961..d50326b 100644
+--- a/supervisor/git_ops.py
++++ b/supervisor/git_ops.py
+@@ -300,7 +300,7 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
+         )
+         return False, msg
+ 
+-    subprocess.run(["git", "checkout", branch], cwd=str(REPO_DIR), check=True)
++    subprocess.run(["git", "checkout", "--", branch] if False else ["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=str(REPO_DIR), check=True)
+     subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=str(REPO_DIR), check=True)
+     # Clean __pycache__ to prevent stale bytecode (git checkout may not update mtime)
+     for p in REPO_DIR.rglob("__pycache__"):

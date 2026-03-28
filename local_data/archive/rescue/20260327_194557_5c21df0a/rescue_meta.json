@@ -1,0 +1,16 @@
+{
+  "ts": "2026-03-27T19:45:57.380987+00:00",
+  "target_branch": "ouroboros",
+  "reason": "bootstrap",
+  "current_branch": "ouroboros",
+  "dirty_count": 2,
+  "unpushed_count": 0,
+  "warnings": [],
+  "path": "/Users/ai_home/ouroboros/local_data/archive/rescue/20260327_194557_5c21df0a",
+  "untracked": {
+    "copied_files": 200,
+    "skipped_files": 0,
+    "copied_bytes": 536818,
+    "truncated": true
+  }
+}
