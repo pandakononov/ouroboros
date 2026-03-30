@@ -614,7 +614,7 @@ class OuroborosAgent:
     # Event emission helpers
     # =====================================================================
 
-    _PROGRESS_COOLDOWN_SEC = 30  # Don't spam progress more than once per 30s
+    _PROGRESS_COOLDOWN_SEC = 120  # Don't spam progress more than once per 2 min
 
     def _emit_progress(self, text: str) -> None:
         now = time.time()
