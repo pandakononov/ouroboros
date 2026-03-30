@@ -158,9 +158,10 @@ class ReflectionPipeline:
             }
 
         revised = self.reviser.revise(text, critique)
+        actually_changed = revised.strip() != text.strip()
         return {
             "original_response": text,
-            "revised_response": revised,
+            "revised_response": revised if actually_changed else text,
             "critique": critique.__dict__,
-            "revision_applied": True,
+            "revision_applied": actually_changed,
         }
