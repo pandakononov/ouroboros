@@ -63,6 +63,7 @@ class BackgroundConsciousness:
         self._next_wakeup_sec: float = 300.0
         self._observations: queue.Queue = queue.Queue()
         self._deferred_events: list = []
+        self._skip_next_think: bool = False
 
         # Budget tracking
         self._bg_spent_usd: float = 0.0
@@ -111,6 +112,7 @@ class BackgroundConsciousness:
                 self._event_queue.put(evt)
             self._deferred_events.clear()
         self._paused = False
+        self._skip_next_think = True  # dialog just replied — skip one cycle to avoid double response
         self._wakeup_event.set()
 
     def inject_observation(self, text: str) -> None:
@@ -136,6 +138,11 @@ class BackgroundConsciousness:
 
             # Skip if paused (task running)
             if self._paused:
+                continue
+
+            # Skip one cycle after task completion to avoid double response
+            if self._skip_next_think:
+                self._skip_next_think = False
                 continue
 
             # Budget check

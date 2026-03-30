@@ -8,6 +8,9 @@ import json
 import time
 import logging
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -27,6 +30,10 @@ def _load_codex_token():
         return ""
 
 PROVIDERS = {
+    "minimax": {
+        "base_url": "https://api.minimax.io/v1",
+        "api_key": os.getenv("MINIMAX_API_KEY", ""),
+    },
     "gemini": {
         "base_url": "http://localhost:8888/v1",
         "api_key": os.getenv("GEMINI_PROXY_KEY", "ouroboros123"),
@@ -51,27 +58,30 @@ PROVIDERS = {
 
 # === Model → provider mapping with fallback chains ===
 MODEL_ROUTES = {
-    # Dialog (needs tool calling!)
+    # Dialog (needs tool calling!) — MiniMax M2.7 primary
     "dialog": [
+        {"provider": "minimax", "model": "MiniMax-M2.7"},
         {"provider": "nvidia", "model": "moonshotai/kimi-k2.5"},
         {"provider": "openai", "model": "gpt-5.4"},
         {"provider": "spark", "model": "qwen3.5:27b"},
     ],
-    # Coding — GPT-5.4 primary
+    # Coding — MiniMax M2.7 primary
     "coder": [
+        {"provider": "minimax", "model": "MiniMax-M2.7"},
         {"provider": "openai", "model": "gpt-5.4"},
         {"provider": "nvidia", "model": "moonshotai/kimi-k2.5"},
         {"provider": "spark", "model": "qwen3.5:27b"},
     ],
-    # Code review — Gemini Pro primary, GPT-5.4 fallback
+    # Code review — MiniMax M2.7 primary
     "reviewer": [
+        {"provider": "minimax", "model": "MiniMax-M2.7"},
         {"provider": "gemini", "model": "gemini-2.5-pro"},
         {"provider": "openai", "model": "gpt-5.4"},
-        {"provider": "nvidia", "model": "moonshotai/kimi-k2.5"},
         {"provider": "spark", "model": "qwen3.5:27b"},
     ],
-    # Light / consciousness (speed matters)
+    # Light / consciousness — MiniMax M2.7 primary
     "light": [
+        {"provider": "minimax", "model": "MiniMax-M2.7"},
         {"provider": "gemini", "model": "gemini-2.5-flash"},
         {"provider": "nvidia", "model": "moonshotai/kimi-k2.5"},
         {"provider": "spark", "model": "qwen3.5:27b"},
