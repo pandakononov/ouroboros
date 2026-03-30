@@ -1,0 +1,49 @@
+# Ouroboros ESP32-S3-BOX-3 Voice Client
+
+menu "Ouroboros Voice"
+
+    config OUROBOROS_SERVER_HOST
+        string "Mac Studio hostname/IP"
+        default "192.168.1.100"
+        help
+            IP address or hostname of Mac Studio running voice_server.
+
+    config OUROBOROS_SERVER_PORT
+        int "Voice server WebSocket port"
+        default 8000
+        range 1 65535
+        help
+            WebSocket port of the voice_server.
+
+    config OUROBOROS_WIFI_SSID
+        string "WiFi SSID"
+        default "MyNetwork"
+        help
+            WiFi network SSID for ESP32 to connect to.
+
+    config OUROBOROS_WIFI_PASSWORD
+        string "WiFi Password"
+        default "password"
+        help
+            WiFi password.
+
+    config OUROBOROS_DEVICE_NAME
+        string "Device name"
+        default "Ouroboros-BOX"
+        help
+            Display name shown in server logs.
+
+    config OUROBOROS_WAKE_THRESHOLD
+        int "VAD energy threshold (0-32767)"
+        default 2000
+        help
+            RMS energy threshold for voice activity detection.
+            Higher = less sensitive, Lower = more sensitive.
+
+    config OUROBOROS_WAKE_TIMEOUT_MS
+        int "Max recording duration (ms)"
+        default 10000
+        help
+            Maximum time to record before forcing send.
+
+endmenu
