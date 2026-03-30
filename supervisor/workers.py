@@ -243,8 +243,8 @@ def auto_resume_after_restart() -> None:
             if not content_lines:
                 return
 
-        # Auto-resume: inject synthetic message
-        time.sleep(2)  # Let everything initialize
+        # Auto-resume: wait before starting to give owner time to send a message
+        time.sleep(30)  # Wait 30s — if owner writes first, agent will be busy
         agent = _get_chat_agent()
         if not agent._busy:
             import threading
