@@ -14,6 +14,7 @@ import os
 import pathlib
 import queue
 import threading
+import asyncio
 import time
 import traceback
 from dataclasses import dataclass
@@ -444,7 +445,7 @@ class OuroborosAgent:
             if isinstance(text, str) and len(text.strip()) > 20:
                 try:
                     reflector = ReflectionPipeline(llm=self.llm)
-                    reflection_result = reflector.run(text, task.get("chat_id"), task.get("id"))
+                    reflection_result = asyncio.run(reflector.run(text, task.get("chat_id"), task.get("id")))
                     if reflection_result["revised_response"]:
                         # Log reflection metrics
                         append_jsonl(drive_logs / "events.jsonl", {
