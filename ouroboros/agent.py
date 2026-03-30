@@ -614,8 +614,13 @@ class OuroborosAgent:
     # Event emission helpers
     # =====================================================================
 
+    _PROGRESS_COOLDOWN_SEC = 30  # Don't spam progress more than once per 30s
+
     def _emit_progress(self, text: str) -> None:
-        self._last_progress_ts = time.time()
+        now = time.time()
+        if now - self._last_progress_ts < self._PROGRESS_COOLDOWN_SEC:
+            return
+        self._last_progress_ts = now
         if self._event_queue is None or self._current_chat_id is None:
             return
         try:
