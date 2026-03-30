@@ -418,7 +418,7 @@ class BackgroundConsciousness:
 
     _BG_TOOL_WHITELIST = frozenset({
         # Memory & identity
-        "send_owner_message", "schedule_task", "update_scratchpad",
+        "schedule_task", "update_scratchpad",
         "update_identity", "set_next_wakeup",
         # Knowledge base
         "knowledge_read", "knowledge_write", "knowledge_list",
