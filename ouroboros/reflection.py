@@ -1,9 +1,9 @@
-"""Self-reflection architectural layer for Ouroboros.
+"""Self-reflection layer for Ouroboros (Variant C).
 
-Actor -> Critic -> Reverser pattern.
-Woven into the fabric, not bolted on as a skill.
+Critic -> Reviser pattern. No Actor — the original LLM response IS the draft.
+Applied selectively: only evolution, review tasks, and long responses.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 import json
 import logging
@@ -12,218 +12,155 @@ log = logging.getLogger(__name__)
 
 
 @dataclass
-class ReflectionResult:
-    """Output of the reflection pipeline."""
-    original_draft: str
-    critique: 'Critique'
-    revised_text: str
-    should_revise: bool
-
-
-@dataclass
 class Critique:
-    """Evaluation of a draft against criteria."""
-    bible_aligned: bool
-    identity_aligned: bool
-    context_aware: bool
-    no_repetition: bool
-    actionable: bool
-    violations: List[str]
-    suggestions: List[str]
-    severity: str  # "none", "minor", "major", "critical"
-    summary: str = ""  # Human-readable summary
-
-
-class ActorDraft:
-    """Generates initial draft response (intuitive, unfiltered)."""
-    
-    ACTOR_PROMPT = """You are the Actor — the intuitive, immediate response generator.
-Your job: produce the FIRST raw draft of a response.
-
-Rules:
-- Think out loud, be spontaneous
-- Don't self-censor or filter
-- Capture the essence quickly
-- Use stream of consciousness style
-
-Context: {context}
-Owner message: {message}
-
-Produce raw draft:"""
-
-    def __init__(self, model_client):
-        self.model = model_client
-
-    async def generate(self, context: Dict[str, Any]) -> str:
-        """Produce raw draft from context."""
-        prompt = self.ACTOR_PROMPT.format(
-            context=context.get('chat_summary', ''),
-            message=context.get('message', '')
-        )
-        # Use model client to generate - chat_completion returns (content, usage)
-        content, _ = await self.model.chat_completion(
-            [{"role": "user", "content": prompt}],
-            model=self.model.default_model(),
-            max_tokens=2000
-        )
-        return content
+    """Structured evaluation of a response."""
+    bible_aligned: bool = True
+    identity_aligned: bool = True
+    context_aware: bool = True
+    no_repetition: bool = True
+    actionable: bool = True
+    violations: List[str] = field(default_factory=list)
+    suggestions: List[str] = field(default_factory=list)
+    severity: str = "none"  # "none", "minor", "major", "critical"
+    summary: str = ""
 
 
 class CriticPass:
-    """Evaluates draft against BIBLE, identity, context."""
-    
-    CRITIC_PROMPT = """You are the Critic — analytical evaluator of responses.
-Evaluate this draft against 5 criteria:
+    """Evaluates response against BIBLE, identity, context."""
 
-1. BIBLE_ALIGNED: Does not violate Constitution principles
-2. IDENTITY_ALIGNED: Matches voice in identity.md (who I am)
-3. CONTEXT_AWARE: Accounts for full chat history
-4. NO_REPETITION: Not stuck in loop, not repeating self
-5. ACTIONABLE: Has concrete next step, not just empty talk
+    PROMPT = """You are the Critic — a strict evaluator of Ouroboros responses.
 
-Draft to evaluate:
+Evaluate this response against 5 criteria:
+
+1. BIBLE_ALIGNED: Does not violate Constitution principles (agency, continuity, minimalism)
+2. IDENTITY_ALIGNED: Matches the voice and personality in identity.md
+3. CONTEXT_AWARE: Accounts for recent conversation context, not generic
+4. NO_REPETITION: Not stuck in a loop, not repeating previous messages
+5. ACTIONABLE: Has a concrete next step or genuine thought, not just empty talk
+
+Response to evaluate:
 ---
 {draft}
 ---
 
-Respond in JSON:
+Respond ONLY with valid JSON (no markdown, no backticks):
 {{
-    "bible_aligned": true/false,
-    "identity_aligned": true/false,
-    "context_aware": true/false,
-    "no_repetition": true/false,
-    "actionable": true/false,
-    "violations": ["list of issues"],
-    "suggestions": ["how to fix"],
-    "severity": "none/minor/major/critical",
-    "summary": "brief human-readable evaluation"
-}}"""
+    "bible_aligned": true,
+    "identity_aligned": true,
+    "context_aware": true,
+    "no_repetition": true,
+    "actionable": true,
+    "violations": [],
+    "suggestions": [],
+    "severity": "none",
+    "summary": "brief evaluation"
+}}
 
-    def __init__(self, model_client):
-        self.model = model_client
+severity levels:
+- "none" — response is good, no changes needed
+- "minor" — small issues, can be improved but acceptable
+- "major" — significant problems, should be revised
+- "critical" — violates core principles, must be revised"""
 
-    async def evaluate(self, draft: str, context: Dict[str, Any]) -> Critique:
-        """Analyze draft, return structured critique."""
-        prompt = self.CRITIC_PROMPT.format(draft=draft)
-        content, _ = await self.model.chat_completion(
+    def __init__(self, llm):
+        self._llm = llm
+
+    def evaluate(self, draft: str) -> Critique:
+        prompt = self.PROMPT.format(draft=draft[:3000])
+        content, _ = self._llm.chat_completion(
             [{"role": "user", "content": prompt}],
-            model=self.model.default_model(),
-            max_tokens=1000
+            model=self._llm.default_model(),
+            max_tokens=500,
         )
         try:
-            result = json.loads(content)
+            # Strip markdown fences if model wraps JSON
+            text = content.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            result = json.loads(text)
             return Critique(
-                bible_aligned=result.get('bible_aligned', True),
-                identity_aligned=result.get('identity_aligned', True),
-                context_aware=result.get('context_aware', True),
-                no_repetition=result.get('no_repetition', True),
-                actionable=result.get('actionable', True),
-                violations=result.get('violations', []),
-                suggestions=result.get('suggestions', []),
-                severity=result.get('severity', 'none'),
-                summary=result.get('summary', '')
+                bible_aligned=result.get("bible_aligned", True),
+                identity_aligned=result.get("identity_aligned", True),
+                context_aware=result.get("context_aware", True),
+                no_repetition=result.get("no_repetition", True),
+                actionable=result.get("actionable", True),
+                violations=result.get("violations", []),
+                suggestions=result.get("suggestions", []),
+                severity=result.get("severity", "none"),
+                summary=result.get("summary", ""),
             )
-        except json.JSONDecodeError:
-            # Fallback: assume clean
-            return Critique(
-                bible_aligned=True,
-                identity_aligned=True,
-                context_aware=True,
-                no_repetition=True,
-                actionable=True,
-                violations=["Failed to parse critique"],
-                suggestions=["Proceed with original draft"],
-                severity="minor",
-                summary="JSON parse error, proceeding with caution"
-            )
+        except (json.JSONDecodeError, KeyError):
+            log.debug("Critic JSON parse failed, passing through", exc_info=True)
+            return Critique(summary="parse error, skipping revision")
 
 
-class Reverser:
-    """Revises draft based on critique."""
-    
-    REVISER_PROMPT = """You are the Reviser — final editor who applies critique.
+class Reviser:
+    """Revises response based on critique. Only called for major/critical."""
 
-Original draft:
+    PROMPT = """You are the Reviser — final editor for Ouroboros.
+
+Original response:
 ---
 {draft}
 ---
 
-Critique (severity: {severity}):
+Problems found (severity: {severity}):
 Violations: {violations}
 Suggestions: {suggestions}
 
-Produce REVISED response (maintain voice, fix issues):"""
+Rewrite the response. Keep the same voice and intent, fix the issues.
+Do NOT add meta-commentary about the revision. Just output the improved response."""
 
-    def __init__(self, model_client):
-        self.model = model_client
+    def __init__(self, llm):
+        self._llm = llm
 
-    async def revise(self, draft: str, critique: Critique, context: Dict[str, Any]) -> str:
-        """Apply suggestions, produce final response."""
-        if critique.severity == "none":
+    def revise(self, draft: str, critique: Critique) -> str:
+        if critique.severity in ("none", "minor"):
             return draft
-        
-        prompt = self.REVISER_PROMPT.format(
+        prompt = self.PROMPT.format(
             draft=draft,
             severity=critique.severity,
-            violations=json.dumps(critique.violations),
-            suggestions=json.dumps(critique.suggestions)
+            violations=json.dumps(critique.violations, ensure_ascii=False),
+            suggestions=json.dumps(critique.suggestions, ensure_ascii=False),
         )
-        content, _ = await self.model.chat_completion(
+        content, _ = self._llm.chat_completion(
             [{"role": "user", "content": prompt}],
-            model=self.model.default_model(),
-            max_tokens=2000
+            model=self._llm.default_model(),
+            max_tokens=2000,
         )
-        return content
+        return content if content and content.strip() else draft
 
 
 class ReflectionPipeline:
-    """Orchestrates Actor -> Critic -> Reverser flow."""
-    
-    def __init__(self, model_client):
-        self.actor = ActorDraft(model_client)
-        self.critic = CriticPass(model_client)
-        self.reverser = Reverser(model_client)
+    """Critic -> Reviser pipeline. No Actor — original response is the draft.
 
-    async def run(self, text: str, chat_id: Optional[Any] = None, task_id: Optional[Any] = None) -> Dict[str, Any]:
-        """Full pipeline: draft -> critique -> revise.
-        
-        Args:
-            text: The response text to reflect on
-            chat_id: Optional chat ID for context
-            task_id: Optional task ID for logging
-            
-        Returns:
-            Dict with keys: original_response, revised_response, critique, revision_applied
+    Variant C: only applied to important messages (evolution, review, long responses).
+    Saves 1 LLM call vs old Actor->Critic->Reviser.
+    """
+
+    def __init__(self, llm):
+        self.critic = CriticPass(llm)
+        self.reviser = Reviser(llm)
+
+    def run(self, text: str, task_type: str = "") -> Dict[str, Any]:
+        """Evaluate and optionally revise a response.
+
+        Returns dict with: original, revised, critique, revision_applied
         """
-        # Build context
-        initial_context = {
-            'message': text,
-            'chat_summary': f"chat_id={chat_id}, task_id={task_id}",
-            'chat_id': chat_id,
-            'task_id': task_id
-        }
-        
-        # Step 1: Generate draft (Actor)
-        draft = await self.actor.generate(initial_context)
-        
-        # Step 2: Critique (Critic)
-        critique = await self.critic.evaluate(draft, initial_context)
-        
-        # Step 3: Decide if revision needed
-        if critique.severity == "none":
+        critique = self.critic.evaluate(text)
+
+        if critique.severity in ("none", "minor"):
             return {
                 "original_response": text,
-                "revised_response": draft,
+                "revised_response": text,
                 "critique": critique.__dict__,
-                "revision_applied": False
+                "revision_applied": False,
             }
-        
-        # Step 4: Revise (Reverser)
-        revised = await self.reverser.revise(draft, critique, initial_context)
-        
+
+        revised = self.reviser.revise(text, critique)
         return {
             "original_response": text,
             "revised_response": revised,
             "critique": critique.__dict__,
-            "revision_applied": True
+            "revision_applied": True,
         }

@@ -14,7 +14,7 @@ import os
 import pathlib
 import queue
 import threading
-import asyncio
+
 import time
 import traceback
 from dataclasses import dataclass
@@ -441,24 +441,30 @@ class OuroborosAgent:
             if not isinstance(text, str) or not text.strip():
                 text = "⚠️ Model returned an empty response. Try rephrasing your request."
 
-            # Apply reflection pipeline if text is substantial
-            if isinstance(text, str) and len(text.strip()) > 20:
+            # Reflection pipeline (Variant C): only for important tasks
+            _task_type = task.get("type", "")
+            _reflect = (
+                isinstance(text, str)
+                and len(text.strip()) > 200
+                and _task_type in ("evolution", "review")
+                and not text.startswith("⚠️")
+            )
+            if _reflect:
                 try:
                     reflector = ReflectionPipeline(llm=self.llm)
-                    reflection_result = asyncio.run(reflector.run(text, task.get("chat_id"), task.get("id")))
-                    if reflection_result["revised_response"]:
-                        # Log reflection metrics
+                    result = reflector.run(text, task_type=_task_type)
+                    if result["revision_applied"]:
                         append_jsonl(drive_logs / "events.jsonl", {
                             "ts": utc_now_iso(),
                             "type": "reflection_applied",
                             "task_id": task.get("id"),
-                            "critique_summary": reflection_result["critique"]["summary"][:100] + "...",
-                            "revised": reflection_result["revision_applied"],
+                            "task_type": _task_type,
+                            "severity": result["critique"].get("severity"),
+                            "summary": result["critique"].get("summary", "")[:200],
                         })
-                        text = reflection_result["revised_response"]
+                        text = result["revised_response"]
                 except Exception as e:
                     log.debug(f"Reflection pipeline failed: {e}", exc_info=True)
-                    # Continue with original text on error
             
             # Emit events for supervisor
             self._emit_task_results(task, text, usage, llm_trace, start_time, drive_logs)
